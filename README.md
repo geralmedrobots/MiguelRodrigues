@@ -1,2 +1,0 @@
-# MiguelRodrigues
-differential drive AMR
