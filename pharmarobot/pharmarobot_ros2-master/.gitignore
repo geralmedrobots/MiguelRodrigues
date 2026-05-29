@@ -1,0 +1,16 @@
+.vscode/*
+.env
+__pycache__/
+build/
+install/
+log/
+test/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+serial/*
+ssh_login.sh
+*.db3
+rosbags/*

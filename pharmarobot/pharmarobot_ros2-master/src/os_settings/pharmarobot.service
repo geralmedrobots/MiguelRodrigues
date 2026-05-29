@@ -1,0 +1,44 @@
+[Unit]
+Description=Launch PharmaRobot motor‑driver container
+# Don’t start until we know Docker and the network are up
+# After=network-online.target docker.service
+#After=docker.service network-online.target dev-ttyUSB0.device
+#Requires=docker.service dev-ttyUSB0.device
+#Wants=network-online.target
+
+After=docker.service network-online.target dev-ttyACM0.device
+Wants=docker.service network-online.target dev-ttyACM0.device
+#BindsTo=dev-ttyUSB0.device  
+
+[Service]
+# The script builds & runs the container once and exits
+Type=simple
+WorkingDirectory=/home/medrobots/pharmarobot/ros2_ws
+
+# Wait ourselves until the adapter is really there (belt‑and‑braces)
+ExecStartPre=/bin/sh -c 'while [ ! -e /dev/ttyACM0 ]; do sleep 1; done'
+
+ExecStart=/home/medrobots/pharmarobot/ros2_ws/run_docker_boot.sh
+ExecStop=/usr/bin/docker stop -t 10 pharma_container
+ExecStopPost=-/usr/bin/docker rm -f pharma_container
+
+
+# If you need it to restart on failure, change Type to 'simple'
+#   and add: Restart=on-failure
+# Run as root so it can talk to /dev/ttyUSB* unless your user is in dialout & docker groups
+User=root
+Group=root
+
+Restart=on-failure
+RestartSec=10
+# StartLimitIntervalSec=0
+TimeoutStartSec=20s
+KillMode=control-group
+
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=yes        # keeps unit in “active (exited)” state for easy status checks
+
+
+[Install]
+WantedBy=multi-user.target

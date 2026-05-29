@@ -1,0 +1,19 @@
+roboteq_ros2_driver:
+  ros__parameters:
+    pub_odom_tf: false
+    odom_frame: "odom"
+    base_frame: "base_link"
+    cmdvel_topic: "cmd_vel"
+    odom_topic: "odom"
+    port: "/dev/ttyACM0"
+    baud: 115200
+    open_loop: False # False -> speed control  
+    wheel_radius: 0.085
+    wheelbase: 0.453
+    encoder_ppr: -1024
+    encoder_cpr: -4096
+    max_amps: 5.0
+    max_rpm: 100
+    channel_1: "left" # default right 
+    channel_2: "right" # default left 
+
