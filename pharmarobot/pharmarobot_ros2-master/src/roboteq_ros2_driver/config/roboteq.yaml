@@ -14,6 +14,6 @@ roboteq_ros2_driver:
     encoder_cpr: -4096
     max_amps: 5.0
     max_rpm: 100
-    channel_1: "left" # default right 
-    channel_2: "right" # default left 
+    channel_1: "right" # physical right motor
+    channel_2: "left" # physical left motor
 
