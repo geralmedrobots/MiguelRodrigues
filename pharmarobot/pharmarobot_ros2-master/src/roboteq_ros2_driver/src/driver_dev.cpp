@@ -1,6 +1,4 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
-#include "std_msgs/msg/string.hpp"
-#include "robot_test_logger/robot_test_logger.hpp"
 
 
 #include <chrono> 
@@ -12,6 +10,7 @@
 #include "rclcpp/clock.hpp"
 #include <iostream>
 
+#include "std_msgs/msg/string.hpp"
 
 // dependencies for ROS
 #include <serial/serial.h>
@@ -43,7 +42,17 @@
 #include <tf2/LinearMath/Quaternion.h>
 
 
+
 serial::Serial controller;
+
+namespace
+{
+constexpr double kCommandAngularSign = -1.0;
+constexpr int kChannel1EncoderSign = -1;
+constexpr int kChannel2EncoderSign = -1;
+constexpr int kSerialReadDelayMs = 20;
+}
+
 uint32_t millis()
 {
     auto now = std::chrono::system_clock::now();
@@ -57,17 +66,12 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 //differential_drive_kinematics_(void)
 // initialize parameters and variables
 {
-    logger_ = std::make_unique<RobotTestLogger>(this);
     pub_odom_tf = this->declare_parameter("pub_odom_tf", false);
     odom_frame = this->declare_parameter("odom_frame", "odom");
     base_frame = this->declare_parameter("base_frame", "base_link");
-
     cmdvel_topic = this->declare_parameter("cmdvel_topic", "/cmd_vel");
     odom_topic = this->declare_parameter("odom_topic", "odom");
     port = this->declare_parameter("port", "/dev/ttyUSB0");
-
-    logger_->logSerialConnected(false, port, "Roboteq driver started, serial not connected yet");
-
     baud = this->declare_parameter("baud", 115200);
     open_loop = this->declare_parameter("open_loop", false);
     wheel_radius = this->declare_parameter("wheel_radius", 0.085); // in meters
@@ -77,8 +81,8 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     max_amps = this->declare_parameter("max_amps", 5.0);
     max_rpm = this->declare_parameter("max_rpm", 100);
     
-    channel_1 = this->declare_parameter("channel_1", "right");
-    channel_2 = this->declare_parameter("channel_2", "left");
+    channel_1 = this->declare_parameter("channel_1", "left");
+    channel_2 = this->declare_parameter("channel_2", "right");
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     this->differential_drive_kinematics_->initParam(wheel_radius, wheelbase, encoder_cpr);
@@ -172,69 +176,51 @@ void Roboteq::update_parameters()
     
 }
 
-void Roboteq::connect()
-{
-    RCLCPP_INFO_STREAM(this->get_logger(), "Opening serial port on " << port << " at " << baud << "...");
-
+void Roboteq::connect(){
+    RCLCPP_INFO_STREAM(this->get_logger(),"Opening serial port on " << port << " at " << baud << "..." );
     try
     {
         controller.open();
-
         if (controller.isOpen())
         {
             RCLCPP_INFO(this->get_logger(), "Successfully opened serial port");
-
-            if (logger_) {
-                logger_->logSerialConnected(true, port, "Serial port opened successfully");
-            }
-
-            return;
+            return; 
+            
         }
     }
     catch (serial::IOException &e)
     {
-        RCLCPP_WARN_STREAM(this->get_logger(), "serial::IOException while opening serial port");
-
-        if (logger_) {
-            logger_->logSerialConnected(false, port, "serial::IOException while opening serial port");
-            logger_->logFaultStateEntered("Serial connection failed: IOException");
-        }
-
+        RCLCPP_WARN_STREAM(this->get_logger(), "serial::IOException: ");
         throw;
     }
-
-    RCLCPP_WARN(this->get_logger(), "Failed to open serial port");
-
-    if (logger_) {
-        logger_->logSerialConnected(false, port, "Failed to open serial port");
-        logger_->logFaultStateEntered("Serial connection failed");
-    }
-
+    RCLCPP_WARN(this->get_logger(),"Failed to open serial port");
     sleep(5);
+
 }
 
 
 void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_msg) // const???
 {
-
-    last_cmd_time_ = this->now();
-    received_first_cmd_ = true;
-    command_timeout_logged_ = false;
-
-    if (logger_) {
-        logger_->logVelocityCommand(
-            twist_msg->linear.x,
-            twist_msg->angular.z,
-            true,
-            true,
-            open_loop ? "OPEN_LOOP" : "CLOSED_LOOP",
-            "Roboteq driver received cmd_vel"
-        );
-    }
     
     // wheel speed (m/s)
-    float right_speed = twist_msg->linear.x + wheelbase * twist_msg->angular.z / 2.0;
-    float left_speed = twist_msg->linear.x - wheelbase * twist_msg->angular.z / 2.0;
+    // ROS convention: positive angular.z = left turn.
+    // Hardware-specific correction: this robot's physical turn direction is inverted,
+    // so we invert only the angular component here.
+    const double linear_x = twist_msg->linear.x;
+    const double angular_z = kCommandAngularSign * twist_msg->angular.z;
+
+    const double left_speed = linear_x - (wheelbase * angular_z / 2.0);
+
+    const double right_speed = linear_x + (wheelbase * angular_z / 2.0);
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "CMD_VEL_TO_WHEELS | linear_x=%.3f angular_z=%.3f | left_speed=%.3f right_speed=%.3f",
+        twist_msg->linear.x,
+        twist_msg->angular.z,
+        left_speed,
+        right_speed
+    );
 
     //RCLCPP_INFO(this->get_logger(), "Received linear = %0.2f, angular = %0.2f", twist_msg->linear.x, twist_msg->angular.z);
 
@@ -252,30 +238,29 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
         channel_1_speed = right_speed;
         channel_2_speed = left_speed;
     }
-
     else if (channel_1 == "left" && channel_2 == "right")
     {
         channel_1_speed = left_speed;
         channel_2_speed = right_speed;
     }
-
     else
     {
-    RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
-
-    if (logger_) {
-        logger_->logCommandRejected(
-            twist_msg->linear.x,
-            twist_msg->angular.z,
-            "Invalid Roboteq channel configuration"
-        );
-
-        logger_->logFaultStateEntered("Invalid channel configuration");
+        RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
+        return;
     }
-
-    return;
-}
     /**************** CHANNEL SWAP ***********************************/
+
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "WHEELS_TO_CHANNELS | left_speed=%.3f right_speed=%.3f | channel_1=%s %.3f | channel_2=%s %.3f",
+        left_speed,
+        right_speed,
+        channel_1.c_str(),
+        channel_1_speed,
+        channel_2.c_str(),
+        channel_2_speed
+    );
 
     if (open_loop)
     {
@@ -313,23 +298,7 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     controller.write(channel_2_cmd.str());
     controller.flush();
     //#endif
-
-
-    if (logger_) 
-    {    
-        logger_->logMotorCommandSent(
-        twist_msg->linear.x,
-        twist_msg->angular.z,
-        channel_2_speed,
-        channel_1_speed,
-        "Motor command sent to Roboteq"
-        );
-    }
 }
-
-
-
-
 
 void Roboteq::cmdvel_setup()
 {
@@ -542,37 +511,24 @@ std::vector<int> Roboteq::readEncoderCountRelative()
     if (!result.empty() && result.find("CR=") == 0)
     {
         size_t colon_pos = result.find(':');
-
         if (colon_pos != std::string::npos)
         {
             int ch1 = std::stoi(result.substr(3, colon_pos - 3));
             int ch2 = std::stoi(result.substr(colon_pos + 1));
-
             output.push_back(ch1);
             output.push_back(ch2);
-
-            if (logger_) {
-                logger_->logEncoderReading(ch1, ch2, "Raw Roboteq encoder reading received");
-            }
+            //RCLCPP_WARN(this->get_logger(), "Found encoder counts: %d, %d", ch1, ch2);
         }
         else
         {
             output.push_back(INT_MAX);
             output.push_back(INT_MAX);
-
-            if (logger_) {
-                logger_->logRoboteqResponseInvalid(result);
-            }
         }
     }
     else
     {
         output.push_back(INT_MAX);
         output.push_back(INT_MAX);
-
-        if (logger_) {
-            logger_->logRoboteqResponseInvalid(result.empty() ? "Empty encoder response" : result);
-        }
     }
     return output;
 }
@@ -628,15 +584,6 @@ void Roboteq::odom_loop()
     }
 
     publish_ticks(odom_encoder_left, odom_encoder_right);
-
-    if (logger_) {
-    logger_->logEncoderReading(
-        odom_encoder_left,
-        odom_encoder_right,
-        "Mapped left/right encoder ticks published"
-    );
-}
-
     odom_publish(odom_encoder_left, odom_encoder_right);
     
     return ; // early return if no encoders read
@@ -664,7 +611,7 @@ void Roboteq::publish_ticks(int left_ticks,int right_ticks)
 void Roboteq::odom_publish(int left_ticks, int right_ticks)
 {
 
-    RobotDisplacement twist = differential_drive_kinematics_->calculateForwardKinematics(right_ticks, left_ticks);
+    RobotDisplacement twist = differential_drive_kinematics_->calculateForwardKinematics(left_ticks, right_ticks);
 
     current_pose = differential_drive_kinematics_->updateRobotPose(current_pose, twist);
 
@@ -672,17 +619,6 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     odom_x = current_pose.x;
     odom_y = current_pose.y;
     odom_yaw = current_pose.theta;
-
-    if (logger_) {
-        logger_->logOdomReading(
-            left_ticks,
-            right_ticks,
-            odom_x,
-            odom_y,
-            odom_yaw,
-            "Odometry pose calculated from encoder ticks"
-        );
-    }
 
     odom_last_x = odom_x;
     odom_last_y = odom_y;
@@ -717,41 +653,26 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
 
 int Roboteq::run()
 {
+
     starttime = millis();
     hstimer = starttime;
     mstimer = starttime;
     lstimer = starttime;
-
-    if (received_first_cmd_)
-    {
-        const double cmd_age_s = (this->now() - last_cmd_time_).seconds();
-
-        if (cmd_age_s > cmd_timeout_s_ && !command_timeout_logged_)
-        {
-            if (logger_) {
-                logger_->logCommandTimeout("No fresh cmd_vel received by Roboteq driver");
-            }
-
-            command_timeout_logged_ = true;
-        }
-    }
-
+    
+    //cmdvel_loop();
     odom_loop();
-
+    //cmdvel_run();
     return 0;
 }
 
 Roboteq::~Roboteq()
 {
-    if (controller.isOpen()) {
-        if (logger_) {
-            logger_->logSerialConnected(false, port, "Roboteq driver shutting down, closing serial port");
-        }
 
+    if (controller.isOpen()){
         controller.close();
     }
-
     // rclcpp::shutdown(); // uncomment if node doesnt destroy properly
+
 }
 
 } // end of namespace

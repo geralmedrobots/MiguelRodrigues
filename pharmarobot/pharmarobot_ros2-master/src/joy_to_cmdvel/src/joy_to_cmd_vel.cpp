@@ -5,31 +5,45 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <string>
 
 constexpr double MAX_CMD_LINEAR_VEL = 0.4;
 constexpr double MAX_CMD_ANG_VEL = 0.3;
 
-double clip_max_cmd_linear_vel(double x)
+// Joystick axis mapping.
+// axes[1] = forward/backward
+// axes[3] = rotation
+constexpr int LINEAR_AXIS_INDEX = 1;
+constexpr int ANGULAR_AXIS_INDEX = 3;
+
+// Sign convention.
+// ROS convention: positive angular.z = turn left / counter-clockwise.
+// If the robot turns the wrong way, change ANGULAR_AXIS_SIGN from +1.0 to -1.0.
+constexpr double LINEAR_AXIS_SIGN = 1.0;
+constexpr double ANGULAR_AXIS_SIGN = 1.0;
+
+// Small deadzone to avoid drift when joystick is centered.
+constexpr double JOYSTICK_DEADZONE = 0.08;
+
+double clamp_value(double value, double min_value, double max_value)
 {
-    return std::max(std::min(x, MAX_CMD_LINEAR_VEL), -MAX_CMD_LINEAR_VEL);
+    return std::max(min_value, std::min(value, max_value));
 }
 
-double clip_max_cmd_ang_vel(double x)
+double apply_deadzone_and_scale(double raw_value)
 {
-    return std::max(std::min(x, MAX_CMD_ANG_VEL), -MAX_CMD_ANG_VEL);
-}
+    const double value = clamp_value(raw_value, -1.0, 1.0);
 
-double rescale_function(double value)
-{
-    double scale = 0.1;
-
-    if (std::abs(value) < 0.95) {
-        value = value * scale;
+    if (std::abs(value) < JOYSTICK_DEADZONE) {
+        return 0.0;
     }
 
-    return value;
+    const double sign = value >= 0.0 ? 1.0 : -1.0;
+    const double magnitude = (std::abs(value) - JOYSTICK_DEADZONE) / (1.0 - JOYSTICK_DEADZONE);
+
+    return sign * clamp_value(magnitude, 0.0, 1.0);
 }
 
 class JoyToCmdVel : public rclcpp::Node
@@ -48,75 +62,74 @@ public:
         publisher_ = this->create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
 
         RCLCPP_INFO(this->get_logger(), "RUNNING CPP JoyToCmdVel node");
-        RCLCPP_INFO(this->get_logger(), "Using rescale function: rescale_function");
+        RCLCPP_INFO(this->get_logger(), "Linear axis: %d, angular axis: %d", LINEAR_AXIS_INDEX, ANGULAR_AXIS_INDEX);
+        RCLCPP_INFO(this->get_logger(), "Linear sign: %.1f, angular sign: %.1f", LINEAR_AXIS_SIGN, ANGULAR_AXIS_SIGN);
         RCLCPP_INFO(this->get_logger(), "JoyToCmdVel node has been started.");
 
-        logger_->logJoystickConnected(false, "JoyToCmdVel started, waiting for /joy messages");
+        if (logger_) {
+            logger_->logJoystickConnected(false, "JoyToCmdVel started, waiting for /joy messages");
+        }
     }
 
 private:
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr subscription_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr publisher_;
-
     std::unique_ptr<RobotTestLogger> logger_;
 
     bool joystick_connected_ = false;
-    bool previous_deadman_active_ = false;
-    std::string speed_mode_ = "SLOW";
+    std::string speed_mode_ = "MANUAL";
 
     void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
     {
-        if (!joystick_connected_) {
-            joystick_connected_ = true;
-            logger_->logJoystickConnected(true, "First /joy message received");
-        }
+        if (msg->axes.size() <= static_cast<size_t>(std::max(LINEAR_AXIS_INDEX, ANGULAR_AXIS_INDEX))) {
+            RCLCPP_WARN(this->get_logger(), "Joy message does not contain required axes");
 
-        if (msg->axes.size() <= 3) {
-            logger_->logCommandRejected(
-                0.0,
-                0.0,
-                "Joystick message rejected: expected at least 4 axes"
-            );
+            if (logger_) {
+                logger_->logCommandRejected(0.0, 0.0, "Joy message does not contain required axes");
+            }
+
             return;
         }
 
+        if (!joystick_connected_) {
+            joystick_connected_ = true;
+
+            if (logger_) {
+                logger_->logJoystickConnected(true, "First /joy message received");
+            }
+        }
+
+        const double raw_linear_axis = msg->axes[LINEAR_AXIS_INDEX];
+        const double raw_angular_axis = msg->axes[ANGULAR_AXIS_INDEX];
+
+        const double normalized_linear = apply_deadzone_and_scale(raw_linear_axis);
+        const double normalized_angular = apply_deadzone_and_scale(raw_angular_axis);
+
+        const double linear_x = LINEAR_AXIS_SIGN * normalized_linear * MAX_CMD_LINEAR_VEL;
+        const double angular_z = ANGULAR_AXIS_SIGN * normalized_angular * MAX_CMD_ANG_VEL;
+
         auto twist_msg = geometry_msgs::msg::Twist();
 
-        const double raw_linear_x = rescale_function(msg->axes[1]);
-        const double raw_angular_z = -rescale_function(msg->axes[3]);
-
-        twist_msg.linear.x = clip_max_cmd_linear_vel(raw_linear_x);
+        twist_msg.linear.x = linear_x;
         twist_msg.linear.y = 0.0;
         twist_msg.linear.z = 0.0;
 
         twist_msg.angular.x = 0.0;
         twist_msg.angular.y = 0.0;
-        twist_msg.angular.z = clip_max_cmd_ang_vel(raw_angular_z);
-
-        const bool command_was_clamped =
-            twist_msg.linear.x != raw_linear_x ||
-            twist_msg.angular.z != raw_angular_z;
-
-        if (command_was_clamped) {
-            logger_->logCommandClamped(
-                raw_linear_x,
-                raw_angular_z,
-                twist_msg.linear.x,
-                twist_msg.angular.z,
-                "Joystick command exceeded configured velocity limits"
-            );
-        }
+        twist_msg.angular.z = angular_z;
 
         publisher_->publish(twist_msg);
 
-        logger_->logVelocityCommand(
-            twist_msg.linear.x,
-            twist_msg.angular.z,
-            joystick_connected_,
-            previous_deadman_active_,
-            speed_mode_,
-            "cmd_vel published"
-        );
+        if (logger_) {
+            logger_->logVelocityCommand(
+                twist_msg.linear.x,
+                twist_msg.angular.z,
+                true,
+                true,
+                speed_mode_,
+                "cmd_vel published from joystick"
+            );
+        }
     }
 };
 

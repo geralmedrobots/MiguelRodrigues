@@ -1,0 +1,17 @@
+
+# ROS 2 / colcon generated files
+**/build/
+**/install/
+**/log/
+
+# Runtime logs
+**/robot_logs/
+*.csv
+
+# Temporary / backup files
+*.bak
+*.bak_*
+*.backup*
+*~
+*.swp
+*.swo
