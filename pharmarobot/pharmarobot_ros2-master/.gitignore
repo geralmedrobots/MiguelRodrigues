@@ -16,3 +16,8 @@ ssh_login.sh
 rosbags/*
 odom_test_logs/
 **/odom_test_logs/
+
+# Robot runtime/test logs
+robot_logs/
+odom_test_logs/
+*.csv
