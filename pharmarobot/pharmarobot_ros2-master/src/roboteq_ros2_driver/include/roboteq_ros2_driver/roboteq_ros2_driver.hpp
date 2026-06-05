@@ -1,6 +1,8 @@
 #ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
 #define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
 
+#include "robot_test_logger/robot_test_logger.hpp"
+
 #include <math.h>
 #include <unistd.h>
 
@@ -37,6 +39,13 @@ class Roboteq : public rclcpp::Node
   ~Roboteq();
 
   private:
+
+  std::unique_ptr<RobotTestLogger> logger_;
+
+  rclcpp::Time last_cmd_time_;
+  bool received_first_cmd_ = false;
+  bool command_timeout_logged_ = false;
+  double cmd_timeout_s_ = 0.5;
 
   std::optional<DifferentialDriveKinematics> differential_drive_kinematics_;
 

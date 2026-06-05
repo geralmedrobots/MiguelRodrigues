@@ -673,17 +673,6 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     odom_y = current_pose.y;
     odom_yaw = current_pose.theta;
 
-    if (logger_) {
-        logger_->logOdomReading(
-            left_ticks,
-            right_ticks,
-            odom_x,
-            odom_y,
-            odom_yaw,
-            "Odometry pose calculated from encoder ticks"
-        );
-    }
-
     odom_last_x = odom_x;
     odom_last_y = odom_y;
     odom_last_yaw = odom_yaw;

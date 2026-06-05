@@ -5,7 +5,7 @@ roboteq_ros2_driver:
     base_frame: "base_link"
     cmdvel_topic: "cmd_vel"
     odom_topic: "odom"
-    port: "/dev/ttyACM0"
+    port: "/dev/ttyUSB0"
     baud: 115200
     open_loop: False # False -> speed control  
     wheel_radius: 0.085
