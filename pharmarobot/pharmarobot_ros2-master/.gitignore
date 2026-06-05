@@ -14,3 +14,5 @@ serial/*
 ssh_login.sh
 *.db3
 rosbags/*
+odom_test_logs/
+**/odom_test_logs/
