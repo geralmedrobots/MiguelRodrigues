@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<launch>
+
+    <!-- TF Configuration -->
+  <!-- Base footprint is the robot's center on the ground -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_footprint_to_base_link" 
+        args="0 0 0.25 0 0 0 base_footprint base_link"/>
+
+  <!-- Base link to roboteq controller -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_roboteq" 
+        args="0 0 0.0 0 0 0 base_link roboteq_controller"/>
+
+  <!-- Base link to front SICK laser scanner -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_front_laser" 
+        args="0.27 -0.20 -0.07 -0.785 0 3.14 base_link sick_front_laser"/>
+
+  <!-- Base link to back SICK laser scanner -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_back_laser" 
+        args="-0.27 0.20 -0.15 2.356 0 3.14 base_link sick_back_laser"/>
+
+  <!-- Base link to RealSense camera -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_realsense" 
+        args="0.38 0 0.0 0 0 0 base_link camera_link"/>
+
+  <!-- Odom to base footprint (published by odometry) -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="odom_to_base_footprint" 
+        args="0 0 0 0 0 0 odom base_footprint"/>
+
+
+    <!-- Joy linux node -->
+    <node pkg="joy_linux" exec="joy_linux_node" name="joy_node" output="screen">
+        <param name="deadzone" value="0.001"/>
+        <param name="autorepeat_rate" value="5"/>
+        <param name="dev" value="/dev/input/js0"/>
+    </node>
+
+    <!-- Joy to cmd_vel node -->
+    <node pkg="joy_to_cmdvel" 
+          exec="joy_to_cmd_vel_node" 
+          name="joy_to_cmd_vel_node" 
+          output="screen" />
+
+    <!-- Load and run the roboteq driver node -->
+    <node pkg="roboteq_ros2_driver"
+          exec="roboteq_ros2_driver_node"
+          name="roboteq_ros2_driver_node"
+          output="screen">
+        <param from="$(find-pkg-share roboteq_ros2_driver)/config/roboteq.yaml"/>
+        </node>
+
+    <!-- Launch realsense   -->
+    <node pkg="realsense2_camera"
+          exec="realsense2_camera_node"
+          name="realsense2_camera_node"
+          output="screen">
+        <param from="$(find-pkg-share realsense2_camera)/config/realsense2_camera.yaml"/>
+        <param name="enable_sync" value="true"/>
+        <param name="enable_depth" value="true"/>
+        <param name="enable_color" value="true"/>
+        <param name="enable_pointcloud" value="true"/>  
+    </node>
+
+     <!-- Front SICK Scanner -->
+    <node pkg="sick_safetyscanners2"
+          exec="sick_safetyscanners2_node"
+          name="sick_safetyscanners2_back"
+          output="screen">
+        <param name="sensor_ip" value="192.168.1.11"/>
+        <param name="host_ip" value="192.168.1.1"/>
+        <param name="host_udp_port" value="2122"/>
+        <param name="frame_id" value="sick_back_laser"/>
+        <param name="angle_offset" value="0.0"/>
+        <param name="min_intensities" value="0.0"/>
+        <remap from="scan" to="sick_back/scan"/>
+    </node>
+
+    <!-- Rear SICK Scanner -->
+    <node pkg="sick_safetyscanners2"
+          exec="sick_safetyscanners2_node"
+          name="sick_safetyscanners2_front"
+          output="screen">
+        <param name="sensor_ip" value="192.168.1.12"/>
+        <param name="host_ip" value="192.168.1.1"/>
+        <param name="host_udp_port" value="2123"/>
+        <param name="frame_id" value="sick_front_laser"/>
+        <param name="angle_offset" value="0.0"/> <!-- 180 degrees in radians -->
+        <param name="min_intensities" value="0.0"/>
+        <remap from="scan" to="sick_front/scan"/>
+    </node>
+    
+    <!-- Load and run the kalman odometry node 
+    <node pkg="kalman_odom"
+          exec="kalman_odometry_node"
+          name="kalman_odometry_node"
+          output="screen"/>
+
+    -->
+    
+</launch>
