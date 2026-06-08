@@ -81,8 +81,8 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     max_amps = this->declare_parameter("max_amps", 5.0);
     max_rpm = this->declare_parameter("max_rpm", 100);
     
-    channel_1 = this->declare_parameter("channel_1", "left");
-    channel_2 = this->declare_parameter("channel_2", "right");
+    channel_1 = this->declare_parameter("channel_1", "right");
+    channel_2 = this->declare_parameter("channel_2", "left");
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     this->differential_drive_kinematics_->initParam(wheel_radius, wheelbase, encoder_cpr);
