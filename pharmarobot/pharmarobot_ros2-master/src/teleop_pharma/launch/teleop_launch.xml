@@ -10,21 +10,33 @@
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_roboteq" 
         args="0 0 0.0 0 0 0 base_link roboteq_controller"/>
 
-  <!-- Base link to front SICK laser scanner -->
+  <!-- Base link to front SICK laser scanner
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_front_laser" 
         args="0.27 -0.20 -0.07 -0.785 0 3.14 base_link sick_front_laser"/>
-
-  <!-- Base link to back SICK laser scanner -->
+ -->
+  <!-- Base link to back SICK laser scanner 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_back_laser" 
         args="-0.27 0.20 -0.15 2.356 0 3.14 base_link sick_back_laser"/>
+-->
+
+
+<!-- Front LiDAR -->
+<node pkg="tf2_ros" exec="static_transform_publisher"
+      name="base_to_front_laser"
+      args="0.4125 0 0.33 0 0 0 base_link front_laser"/>
+
+<!-- Back LiDAR -->
+<node pkg="tf2_ros" exec="static_transform_publisher"
+      name="base_to_back_laser"
+      args="-0.4125 0 0.33 3.14159 0 0 base_link back_laser"/>
 
   <!-- Base link to RealSense camera -->
   <node pkg="tf2_ros" exec="static_transform_publisher" name="base_to_realsense" 
         args="0.38 0 0.0 0 0 0 base_link camera_link"/>
 
-  <!-- Odom to base footprint (published by odometry) -->
+  <!-- Odom to base footprint (published by odometry) 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="odom_to_base_footprint" 
-        args="0 0 0 0 0 0 odom base_footprint"/>
+        args="0 0 0 0 0 0 odom base_footprint"/>-->
 
 
     <!-- Joy linux node -->
@@ -59,35 +71,67 @@
         <param name="enable_color" value="true"/>
         <param name="enable_pointcloud" value="true"/>  
     </node>
+   <!-- FRONT RPLIDAR C1 -->
+<node pkg="sllidar_ros2"
+      exec="sllidar_node"
+      name="rplidar_front"
+      output="screen">
 
-     <!-- Front SICK Scanner -->
+    <param name="channel_type" value="serial"/>
+    <param name="serial_port" value="/dev/ttyUSB2"/>
+    <param name="serial_baudrate" value="460800"/>
+    <param name="frame_id" value="front_laser"/>
+    <param name="inverted" value="false"/>
+    <param name="angle_compensate" value="true"/>
+
+    <remap from="/scan" to="/front_scan"/>
+
+</node>
+
+<!-- BACK RPLIDAR C1 -->
+<node pkg="sllidar_ros2"
+      exec="sllidar_node"
+      name="rplidar_back"
+      output="screen">
+
+    <param name="channel_type" value="serial"/>
+    <param name="serial_port" value="/dev/ttyUSB1"/>
+    <param name="serial_baudrate" value="460800"/>
+    <param name="frame_id" value="back_laser"/>
+    <param name="inverted" value="false"/>
+    <param name="angle_compensate" value="true"/>
+
+    <remap from="/scan" to="/back_scan"/>
+
+</node>
+     <!-- Front SICK Scanner 
     <node pkg="sick_safetyscanners2"
           exec="sick_safetyscanners2_node"
           name="sick_safetyscanners2_back"
           output="screen">
-        <param name="sensor_ip" value="192.168.1.11"/>
+        <param name="sensor_ip" value="10.0.4.101"/>
         <param name="host_ip" value="192.168.1.1"/>
         <param name="host_udp_port" value="2122"/>
         <param name="frame_id" value="sick_back_laser"/>
         <param name="angle_offset" value="0.0"/>
         <param name="min_intensities" value="0.0"/>
         <remap from="scan" to="sick_back/scan"/>
-    </node>
+    </node>-->
 
-    <!-- Rear SICK Scanner -->
+    <!-- Rear SICK Scanner 
     <node pkg="sick_safetyscanners2"
           exec="sick_safetyscanners2_node"
           name="sick_safetyscanners2_front"
           output="screen">
-        <param name="sensor_ip" value="192.168.1.12"/>
-        <param name="host_ip" value="192.168.1.1"/>
+         <param name="sensor_ip" value="10.0.4.101"/>
+        <param name="host_ip" value="10.0.4.27"/>
         <param name="host_udp_port" value="2123"/>
         <param name="frame_id" value="sick_front_laser"/>
-        <param name="angle_offset" value="0.0"/> <!-- 180 degrees in radians -->
+        <param name="angle_offset" value="0.0"/> 
         <param name="min_intensities" value="0.0"/>
         <remap from="scan" to="sick_front/scan"/>
     </node>
-    
+    -->
     <!-- Load and run the kalman odometry node 
     <node pkg="kalman_odom"
           exec="kalman_odometry_node"
