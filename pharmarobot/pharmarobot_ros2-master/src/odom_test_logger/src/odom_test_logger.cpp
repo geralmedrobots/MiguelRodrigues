@@ -99,6 +99,12 @@ private:
   double center_total_m_ = 0.0;
   double yaw_total_rad_ = 0.0;
 
+  // Integrated 2D pose reconstructed directly from wheel ticks.
+  // center_total_m_ is the signed path length along the travelled curve.
+  // x_m_/y_m_ represent start-to-current displacement in the odometry frame.
+  double x_m_ = 0.0;
+  double y_m_ = 0.0;
+
   std::ofstream file_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
@@ -136,6 +142,11 @@ private:
     const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
     const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
     return std::atan2(siny_cosp, cosy_cosp);
+  }
+
+  double straight_line_distance_m() const
+  {
+    return std::sqrt((x_m_ * x_m_) + (y_m_ * y_m_));
   }
 
   void open_log_file()
@@ -176,6 +187,11 @@ private:
       << "center_total_m,"
       << "delta_yaw_rad,"
       << "yaw_total_rad,"
+      << "path_length_m,"
+      << "x_m,"
+      << "y_m,"
+      << "yaw_rad,"
+      << "straight_line_distance_m,"
       << "odom_available,"
       << "odom_x_m,"
       << "odom_y_m,"
@@ -209,6 +225,11 @@ private:
       << center_total_m_ << ","
       << 0.0 << ","
       << yaw_total_rad_ << ","
+      << center_total_m_ << ","
+      << x_m_ << ","
+      << y_m_ << ","
+      << yaw_total_rad_ << ","
+      << straight_line_distance_m() << ","
       << (odom_received_ ? "true" : "false") << ","
       << latest_odom_x_ << ","
       << latest_odom_y_ << ","
@@ -255,7 +276,15 @@ private:
     center_total_m_ += center_delta_m;
 
     const double delta_yaw_rad = (right_delta_m - left_delta_m) / wheelbase_m_;
+
+    // Midpoint integration for differential-drive odometry.
+    const double theta_mid_rad = yaw_total_rad_ + (0.5 * delta_yaw_rad);
+    x_m_ += center_delta_m * std::cos(theta_mid_rad);
+    y_m_ += center_delta_m * std::sin(theta_mid_rad);
     yaw_total_rad_ += delta_yaw_rad;
+
+    const double path_length_m = center_total_m_;
+    const double straight_line_distance = straight_line_distance_m();
 
     const double t = this->now().seconds();
 
@@ -278,6 +307,11 @@ private:
       << center_total_m_ << ","
       << delta_yaw_rad << ","
       << yaw_total_rad_ << ","
+      << path_length_m << ","
+      << x_m_ << ","
+      << y_m_ << ","
+      << yaw_total_rad_ << ","
+      << straight_line_distance << ","
       << (odom_received_ ? "true" : "false") << ","
       << latest_odom_x_ << ","
       << latest_odom_y_ << ","

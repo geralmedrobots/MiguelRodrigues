@@ -209,9 +209,9 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     const double linear_x = twist_msg->linear.x;
     const double angular_z = kCommandAngularSign * twist_msg->angular.z;
 
-    const double left_speed = linear_x - (wheelbase * angular_z / 2.0);
+    const double left_speed = linear_x + (wheelbase * angular_z / 2.0);
 
-    const double right_speed = linear_x + (wheelbase * angular_z / 2.0);
+    const double right_speed = linear_x - (wheelbase * angular_z / 2.0);
 
     RCLCPP_INFO(
         this->get_logger(),

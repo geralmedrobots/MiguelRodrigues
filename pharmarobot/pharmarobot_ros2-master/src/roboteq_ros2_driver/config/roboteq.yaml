@@ -8,7 +8,7 @@ roboteq_ros2_driver:
     port: "/dev/ttyUSB0"
     baud: 115200
     open_loop: False # False -> speed control  
-    wheel_radius: 0.084
+    wheel_radius: 0.0881
     wheelbase: 0.453
     encoder_ppr: -1024
     encoder_cpr: -4096
