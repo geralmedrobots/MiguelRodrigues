@@ -1,0 +1,21 @@
+Start Docker Desktop no windows
+Run 00_start_xserver.bat.
+Run 02_run_docker.bat.
+
+Open another terminal in the same container:
+- Run 03_additional_terminal.bat.
+
+Build workspace inside Docker:
+  cd ~/ros2_ws
+  colcon build
+  source install/setup.bash
+
+If RViz opens but 3D rendering is slow or blank:
+- Try changing Docker run variable LIBGL_ALWAYS_INDIRECT from 0 to 1.
+- Make sure VcXsrv was started with -wgl.
+- Check Windows firewall allows VcXsrv on private networks.
+
+If GUI apps cannot open:
+- Check DISPLAY=host.docker.internal:0.0
+- Restart VcXsrv using 00_start_xserver.bat
+- Check Windows firewall settings for VcXsrv
