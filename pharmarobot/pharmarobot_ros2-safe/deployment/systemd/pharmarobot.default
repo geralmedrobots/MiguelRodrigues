@@ -1,0 +1,8 @@
+PHARMA_CONTAINER=pharma_container
+PHARMA_IMAGE=pharmarobot:clean
+PHARMA_WS_DIR=/home/medrobots/pharmarobot/pharmarobot/pharmarobot_ros2-master
+ROS_DOMAIN_ID=0
+ROBOTEQ_PORT=/dev/roboteq
+FRONT_PORT=/dev/lidar_front
+BACK_PORT=/dev/lidar_back
+BAUDRATE=460800

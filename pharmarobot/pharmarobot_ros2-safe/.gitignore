@@ -1,0 +1,36 @@
+# Editors and local environment
+.vscode/
+.env
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# ROS / colcon generated files
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
+
+# Runtime data and ROS bags
+*.db3
+rosbags/
+odom_test_logs/*.csv
+odom_test_logs/*/
+robot_logs/*.csv
+robot_logs/*/
+
+# Backups
+*.bak
+*.bak_*
+*.backup*
+
+# Local credentials/helpers
+ssh_login.sh

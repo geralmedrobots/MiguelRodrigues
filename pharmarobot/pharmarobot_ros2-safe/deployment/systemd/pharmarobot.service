@@ -1,0 +1,16 @@
+[Unit]
+Description=PharmaRobot Docker container
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/pharmarobot
+ExecStart=/usr/local/bin/pharma_start_container.sh
+ExecStop=/usr/local/bin/pharma_stop_container.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

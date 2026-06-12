@@ -1,0 +1,12 @@
+build/
+install/
+log/
+odom_test_logs/
+robot_logs/
+.git/
+**/.git/
+**/__pycache__/
+*.pyc
+*.pyo
+*.swp
+*.bak*

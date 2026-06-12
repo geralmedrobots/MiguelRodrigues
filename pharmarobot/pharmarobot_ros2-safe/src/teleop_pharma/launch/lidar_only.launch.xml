@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- LiDAR-only launch file.
+       Starts only the two RPLIDAR C1 sensors and their TFs.
+       Does not start joystick, Roboteq, RealSense or old teleop nodes. -->
+
+  <arg name="front_port" default="/dev/lidar_front"/>
+  <arg name="back_port" default="/dev/lidar_back"/>
+  <arg name="baudrate" default="460800"/>
+
+  <!-- Front LiDAR TF -->
+  <node pkg="tf2_ros"
+        exec="static_transform_publisher"
+        name="base_to_front_laser"
+        args="0.41 0 0.29 3.155 0 0 base_link front_laser"/>
+
+  <!-- Back LiDAR TF -->
+  <node pkg="tf2_ros"
+        exec="static_transform_publisher"
+        name="base_to_back_laser"
+        args="-0.40 0 0.29 0 0 0 base_link back_laser"/>
+
+  <!-- FRONT RPLIDAR C1 -->
+  <node pkg="sllidar_ros2"
+        exec="sllidar_node"
+        name="rplidar_front"
+        output="screen">
+    <param name="channel_type" value="serial"/>
+    <param name="serial_port" value="$(var front_port)"/>
+    <param name="serial_baudrate" value="$(var baudrate)"/>
+    <param name="frame_id" value="front_laser"/>
+    <param name="inverted" value="false"/>
+    <param name="angle_compensate" value="true"/>
+    <remap from="/scan" to="/front_scan"/>
+  </node>
+
+  <!-- BACK RPLIDAR C1 -->
+  <node pkg="sllidar_ros2"
+        exec="sllidar_node"
+        name="rplidar_back"
+        output="screen">
+    <param name="channel_type" value="serial"/>
+    <param name="serial_port" value="$(var back_port)"/>
+    <param name="serial_baudrate" value="$(var baudrate)"/>
+    <param name="frame_id" value="back_laser"/>
+    <param name="inverted" value="false"/>
+    <param name="angle_compensate" value="true"/>
+    <remap from="/scan" to="/back_scan"/>
+  </node>
+</launch>
