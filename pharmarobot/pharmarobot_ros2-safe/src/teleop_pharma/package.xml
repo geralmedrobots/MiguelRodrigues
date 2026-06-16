@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>teleop_pharma</name>
+  <version>0.1.0</version>
+  <description>Minimal PharmaRobot control and dual-LiDAR launch files.</description>
+  <maintainer email="engineering@medrobots.pt">Medrobots Engineering</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>joy_linux</exec_depend>
+  <exec_depend>joy_to_cmdvel</exec_depend>
+  <exec_depend>command_arbiter</exec_depend>
+  <exec_depend>roboteq_ros2_driver</exec_depend>
+  <exec_depend>sllidar_ros2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
