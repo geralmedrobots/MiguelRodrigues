@@ -89,6 +89,38 @@ Expected active nodes:
 
 The duplicate-node command should print nothing.
 
+`pharma-minimal-nodes.service` is the authoritative control bring-up path. It
+uses `pharma_run_control.sh`, which stops any stale control launch and known
+child control nodes before starting `teleop_pharma/control_only.launch.py`.
+The legacy `pharma_start_minimal_nodes.sh` command is only a compatibility
+wrapper and delegates to the same launcher; it must not be used to create a
+second detached control launch alongside the service.
+
+Runtime inspection on the NUC container confirmed the duplicate-node failure
+mode: stale standalone `ros2 run joy_linux ...` / `ros2 run joy_to_cmdvel ...`
+processes and stale launch-spawned joystick nodes were coexisting with an
+active `control_only.launch.py`. Running the updated `pharma_stop_control.sh`
+removed the matching control processes; after DDS graph settling,
+`ros2 node list | sort | uniq -d` printed nothing.
+
+Validated safe checks for this change:
+
+```bash
+source /opt/ros/foxy/setup.bash && colcon build --packages-select teleop_pharma
+source /opt/ros/foxy/setup.bash && colcon test --packages-select teleop_pharma
+source /opt/ros/foxy/setup.bash && colcon test-result --verbose
+```
+
+The test result was:
+
+```text
+Summary: 9 tests, 0 errors, 0 failures, 0 skipped
+```
+
+Full control-start validation still requires explicit hardware approval because
+`control_only.launch.py` also starts `roboteq_ros2_driver`, which may access
+`/dev/roboteq`.
+
 ## Clean rebuild inside the running container
 
 ```bash
