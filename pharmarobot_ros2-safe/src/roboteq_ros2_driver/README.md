@@ -88,6 +88,24 @@ encoder signs, wheel geometry, motor command generation, serial behaviour and
 safety logic are unchanged. Runtime TF graph validation on the robot is still
 required before enabling SLAM.
 
+## Odometry twist output
+
+The `/odom` publisher fills `odom.twist.twist.linear.x` and
+`odom.twist.twist.angular.z` from measured encoder odometry instead of leaving
+them at zero. Linear velocity is calculated from the encoder-derived forward
+displacement over the odometry update `dt`. Angular velocity is calculated from
+the normalized yaw delta over the same `dt`, so yaw wraparound across
+`+pi/-pi` does not create a velocity spike.
+
+The first valid odometry sample and any cycle with invalid, non-finite, or
+non-positive `dt` publish zero twist. Encoder read failures still skip odometry
+publication for that cycle. Non-planar twist fields remain zero.
+
+This change does not alter pose integration, dynamic TF publication, encoder
+signs, wheel radius, wheel separation, channel assignment, motor command
+generation, serial behaviour, or safety logic. Manual validation on the robot
+is still required to confirm `/odom` twist values match observed motion.
+
 ## Coupled wheel command saturation
 
 The `cmd_vel` to Roboteq command conversion scales left and right wheel
@@ -105,12 +123,13 @@ wheel radius, wheel separation, command timeout handling, serial port names, or
 emergency stop behavior. Manual validation on the robot is still required before
 using new operating envelopes with real motors.
 
-## Parser, TF and command scaling validation
+## Parser, TF, twist and command scaling validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser, odometry TF, and command scaling tests with:
+Roboteq protocol parser, odometry TF, odometry twist, and command scaling tests
+with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_scaling|test_odom_tf|test_roboteq_protocol"
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
 
 Inspect results with:
 
@@ -119,12 +138,12 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_scaling|test_odom_tf|test_roboteq_protocol"
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
 The validated test result for the current driver change set was:
 
-    Summary: 23 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 32 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 
@@ -133,8 +152,9 @@ generated `WheelTicks` message typesupport. The driver header also supports the
 Foxy `tf2_geometry_msgs/tf2_geometry_msgs.h` include path while remaining
 compatible with newer `tf2_geometry_msgs/tf2_geometry_msgs.hpp` installations.
 
-Known non-blocking build output: the driver may report an unrelated unused
-`dt` variable warning in `driver_dev.cpp`.
+Known non-blocking build output: older driver revisions may report an unrelated
+unused `dt` variable warning in `driver_dev.cpp`; the odometry twist output
+uses that `dt` for velocity calculation.
 
 ## Motor Power Connections
 

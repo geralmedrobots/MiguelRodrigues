@@ -1,6 +1,7 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/command_scaling.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
+#include "roboteq_ros2_driver/odom_twist.hpp"
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 
@@ -700,7 +701,7 @@ void Roboteq::odom_loop()
     }
 
     publish_ticks(odom_encoder_left, odom_encoder_right);
-    odom_publish(odom_encoder_left, odom_encoder_right);
+    odom_publish(odom_encoder_left, odom_encoder_right, dt);
     
     return ; // early return if no encoders read
 }
@@ -724,12 +725,13 @@ void Roboteq::publish_ticks(int left_ticks,int right_ticks)
 
 
 
-void Roboteq::odom_publish(int left_ticks, int right_ticks)
+void Roboteq::odom_publish(int left_ticks, int right_ticks, double dt)
 {
 
-    RobotDisplacement twist = differential_drive_kinematics_.calculateForwardKinematics(left_ticks, right_ticks);
+    RobotDisplacement displacement = differential_drive_kinematics_.calculateForwardKinematics(left_ticks, right_ticks);
+    const double previous_yaw = current_pose.theta;
 
-    current_pose = differential_drive_kinematics_.updateRobotPose(current_pose, twist);
+    current_pose = differential_drive_kinematics_.updateRobotPose(current_pose, displacement);
 
 
     odom_x = current_pose.x;
@@ -751,12 +753,19 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     odom_msg.pose.pose.position.y = odom_y;
     odom_msg.pose.pose.position.z = 0.0;
     odom_msg.pose.pose.orientation = quat;
-    odom_msg.twist.twist.linear.x = 0.0; // linear velocity in x
+    const auto measured_twist = roboteq_ros2_driver::odom_twist::calculate_measured_twist(
+        displacement.linear_x,
+        previous_yaw,
+        odom_yaw,
+        dt,
+        odom_twist_initialized_);
+    odom_msg.twist.twist.linear.x = measured_twist.linear_x;
     odom_msg.twist.twist.linear.y = 0.0;
     odom_msg.twist.twist.linear.z = 0.0;
     odom_msg.twist.twist.angular.x = 0.0;
     odom_msg.twist.twist.angular.y = 0.0;
-    odom_msg.twist.twist.angular.z = 0.0;
+    odom_msg.twist.twist.angular.z = measured_twist.angular_z;
+    odom_twist_initialized_ = true;
     if (odom_tf_broadcaster_) {
         odom_tf_broadcaster_->sendTransform(
             roboteq_ros2_driver::odom_tf::build_odom_to_base_transform(

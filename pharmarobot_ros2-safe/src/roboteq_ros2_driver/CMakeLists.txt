@@ -66,6 +66,15 @@ ament_target_dependencies(roboteq_odom_tf
   tf2
 )
 
+add_library(roboteq_odom_twist
+  src/odom_twist.cpp
+)
+
+target_include_directories(roboteq_odom_twist PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(roboteq_command_scaling
   src/command_scaling.cpp
 )
@@ -99,6 +108,7 @@ target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
   roboteq_command_scaling
   roboteq_odom_tf
+  roboteq_odom_twist
   roboteq_protocol
 )
 
@@ -149,6 +159,7 @@ install(TARGETS
   roboteq_protocol
   roboteq_command_scaling
   roboteq_odom_tf
+  roboteq_odom_twist
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -187,6 +198,14 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_odom_tf
     roboteq_odom_tf
+  )
+
+  ament_add_gtest(test_odom_twist
+    test/test_odom_twist.cpp
+  )
+
+  target_link_libraries(test_odom_twist
+    roboteq_odom_twist
   )
 
   ament_add_gtest(test_command_scaling

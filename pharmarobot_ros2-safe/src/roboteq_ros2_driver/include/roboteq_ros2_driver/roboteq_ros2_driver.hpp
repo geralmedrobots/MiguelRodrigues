@@ -46,6 +46,7 @@ class Roboteq : public rclcpp::Node
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
   bool controller_config_valid_ = false;
+  bool odom_twist_initialized_ = false;
   double cmd_timeout_s_ = 0.5;
 
   DifferentialDriveKinematics differential_drive_kinematics_;
@@ -136,7 +137,7 @@ class Roboteq : public rclcpp::Node
   //void odom_hs_run();
   void odom_ms_run();
   void odom_ls_run();
-  void odom_publish(int left_ticks,int right_ticks);
+  void odom_publish(int left_ticks, int right_ticks, double dt);
   void publish_ticks(int left_ticks,int right_ticks);
   void connect();
 
