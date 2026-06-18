@@ -1,4 +1,5 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
+#include "roboteq_ros2_driver/command_watchdog.hpp"
 #include "roboteq_ros2_driver/command_scaling.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
@@ -224,9 +225,12 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     odom_msg = nav_msgs::msg::Odometry();
 
     serial::Timeout timeout = serial::Timeout::simpleTimeout(1000);
-    controller.setPort(port);
-    controller.setBaudrate(baud);
-    controller.setTimeout(timeout);
+    {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        controller.setPort(port);
+        controller.setBaudrate(baud);
+        controller.setTimeout(timeout);
+    }
     // connect to serial port
     
     update_parameters();
@@ -240,9 +244,12 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
             this->get_logger(),
             "Roboteq startup validation failed; normal runtime startup aborted: %s",
             ex.what());
-        if (controller.isOpen()) {
-            send_stop_command("startup validation failed");
-            controller.close();
+        send_stop_command("startup validation failed");
+        {
+            std::lock_guard<std::mutex> lock(serial_mutex_);
+            if (controller.isOpen()) {
+                controller.close();
+            }
         }
         throw;
     }
@@ -257,13 +264,25 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 // cmd_vel subscriber
 //
 
+    command_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    feedback_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rclcpp::SubscriptionOptions cmdvel_options;
+    cmdvel_options.callback_group = command_callback_group_;
     cmdvel_sub = this->create_subscription<geometry_msgs::msg::Twist>(
         cmdvel_topic, // topic name
         1,         // QoS history depth
-        std::bind(&Roboteq::cmdvel_callback, this, std::placeholders::_1));
+        std::bind(&Roboteq::cmdvel_callback, this, std::placeholders::_1),
+        cmdvel_options);
     using namespace std::chrono_literals;
-    // set odometry publishing loop timer at 10Hz
-    timer_ = this->create_wall_timer(ROBOTEQ_CYCLE_PERIOD,std::bind(&Roboteq::run, this));
+    command_watchdog_timer_ = this->create_wall_timer(
+        ROBOTEQ_CYCLE_PERIOD,
+        std::bind(&Roboteq::command_watchdog_loop, this),
+        command_callback_group_);
+    odom_timer_ = this->create_wall_timer(
+        ROBOTEQ_CYCLE_PERIOD,
+        std::bind(&Roboteq::odom_loop, this),
+        feedback_callback_group_);
     // enable modifying params at run-time
     /*    
     using namespace std::chrono_literals;
@@ -318,6 +337,7 @@ void Roboteq::connect(){
     RCLCPP_INFO_STREAM(this->get_logger(),"Opening serial port on " << port << " at " << baud << "..." );
     try
     {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
         controller.open();
         if (controller.isOpen())
         {
@@ -458,9 +478,14 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     const std::string cmd_1 = channel_1_cmd.str();
     const std::string cmd_2 = channel_2_cmd.str();
 
-    const size_t bytes_1 = controller.write(cmd_1);
-    const size_t bytes_2 = controller.write(cmd_2);
-    controller.flush();
+    size_t bytes_1 = 0;
+    size_t bytes_2 = 0;
+    {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        bytes_1 = controller.write(cmd_1);
+        bytes_2 = controller.write(cmd_2);
+        controller.flush();
+    }
 
     std::string cmd_1_print = cmd_1;
     std::string cmd_2_print = cmd_2;
@@ -486,6 +511,7 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
 
 void Roboteq::send_stop_command(const char * reason)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     if (!controller.isOpen()) {
         return;
     }
@@ -508,11 +534,14 @@ void Roboteq::cmdvel_setup()
     controller_config_valid_ = false;
 
     // stop motors
-    controller.write("!G 1 0\r");
-    controller.write("!G 2 0\r");
-    controller.write("!S 1 0\r");
-    controller.write("!S 2 0\r");
-    controller.flush();
+    {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        controller.write("!G 1 0\r");
+        controller.write("!G 2 0\r");
+        controller.write("!S 1 0\r");
+        controller.write("!S 2 0\r");
+        controller.flush();
+    }
 
     if (!validate_controller_configuration()) {
         throw std::runtime_error("required Roboteq controller configuration does not match");
@@ -524,6 +553,7 @@ void Roboteq::cmdvel_setup()
 std::optional<int> Roboteq::read_controller_config_int(
     const std::string & setting_name, int channel)
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     if (!controller.isOpen()) {
         RCLCPP_ERROR(
             this->get_logger(),
@@ -664,6 +694,7 @@ void Roboteq::odom_setup()
 
 void Roboteq::odom_stream()
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
 
 #ifdef _ODOM_SENSORS
     // start encoder and current output (30 hz)
@@ -685,6 +716,7 @@ void Roboteq::odom_stream()
 
 std::vector<int> Roboteq::readEncoderCountRelative()
 {
+    std::lock_guard<std::mutex> lock(serial_mutex_);
     // Send encoder query to the controller
     controller.flushInput();
     controller.write("?CR\r");
@@ -849,32 +881,31 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks, double dt)
     // odom_pub.publish(odom_msg); ROS1
 }
 
-int Roboteq::run()
+void Roboteq::command_watchdog_loop()
 {
     starttime = millis();
     hstimer = starttime;
     mstimer = starttime;
     lstimer = starttime;
 
-    if (received_first_cmd_) {
-        const double command_age_s = (this->now() - last_cmd_time_).seconds();
-        if (std::isfinite(command_age_s) && command_age_s > cmd_timeout_s_) {
-            if (!command_timeout_logged_) {
-                send_stop_command("cmd_vel timeout");
-                command_timeout_logged_ = true;
-            }
-        }
+    const double command_age_s = received_first_cmd_ ?
+        (this->now() - last_cmd_time_).seconds() : 0.0;
+    if (roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
+        received_first_cmd_, command_timeout_logged_, command_age_s, cmd_timeout_s_))
+    {
+        send_stop_command("cmd_vel timeout");
+        command_timeout_logged_ = true;
     }
-
-    odom_loop();
-    return 0;
 }
 
 Roboteq::~Roboteq()
 {
-    if (controller.isOpen()) {
-        send_stop_command("driver shutdown");
-        controller.close();
+    send_stop_command("driver shutdown");
+    {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        if (controller.isOpen()) {
+            controller.close();
+        }
     }
     // rclcpp::shutdown(); // uncomment if node doesnt destroy properly
 
@@ -887,7 +918,7 @@ int main(int argc, char* argv[])
 
     rclcpp::init(argc, argv);
     
-    rclcpp::executors::SingleThreadedExecutor exec;
+    rclcpp::executors::MultiThreadedExecutor exec;
     rclcpp::NodeOptions options;
     auto node = std::make_shared<Roboteq::Roboteq>();
     exec.add_node(node);

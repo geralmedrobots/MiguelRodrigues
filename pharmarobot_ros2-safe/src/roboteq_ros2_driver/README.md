@@ -106,6 +106,31 @@ signs, wheel radius, wheel separation, channel assignment, motor command
 generation, serial behaviour, or safety logic. Manual validation on the robot
 is still required to confirm `/odom` twist values match observed motion.
 
+## Serial I/O separation
+
+Motor command handling and encoder polling use separate ROS callback paths. The
+`/cmd_vel/safe` subscription and command-timeout watchdog run in the command
+callback group, while encoder polling and odometry publication run in the
+feedback callback group. The node uses a `MultiThreadedExecutor` so a slow
+encoder query, malformed encoder reply, or encoder read timeout does not
+monopolize the only executor thread.
+
+All access to the shared Roboteq serial port is synchronized with one mutex.
+This covers motor command writes, conservative stop writes, controller
+configuration readback, encoder stream setup, encoder polling, startup serial
+configuration/open, and shutdown close. The single serial device still permits
+only one transaction at a time, so a command write may wait briefly for an
+in-progress encoder transaction to release the mutex, but encoder polling no
+longer blocks command callback scheduling.
+
+Encoder read failures keep the existing behavior: malformed or missing encoder
+responses are rejected by the parser and that odometry cycle is skipped.
+Command conversion, command scaling, saturation, odometry math, covariance,
+dynamic TF, frame IDs, encoder signs, motor direction, wheel radius, and wheel
+separation are unchanged. Manual validation on the robot is still required to
+confirm command latency and odometry feedback timing under real serial
+conditions.
+
 ## Odometry covariance
 
 The `/odom` publisher uses explicit diagonal covariance parameters for
@@ -166,13 +191,13 @@ wheel radius, wheel separation, command timeout handling, serial port names, or
 emergency stop behavior. Manual validation on the robot is still required before
 using new operating envelopes with real motors.
 
-## Parser, TF, twist, covariance and command scaling validation
+## Parser, serial, TF, twist, covariance and command scaling validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser, odometry TF, odometry twist, odometry covariance, and
-command scaling tests with:
+Roboteq protocol parser, command watchdog, odometry TF, odometry twist,
+odometry covariance, and command scaling tests with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_covariance|test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
 
 Inspect results with:
 
@@ -181,12 +206,12 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_covariance|test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
 The validated test result for the current driver change set was:
 
-    Summary: 38 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 44 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 

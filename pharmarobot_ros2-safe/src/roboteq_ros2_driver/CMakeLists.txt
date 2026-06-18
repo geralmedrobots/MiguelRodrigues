@@ -51,6 +51,15 @@ target_include_directories(roboteq_protocol PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_command_watchdog
+  src/command_watchdog.cpp
+)
+
+target_include_directories(roboteq_command_watchdog PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(roboteq_odom_tf
   src/odom_tf.cpp
 )
@@ -115,6 +124,7 @@ add_executable(${PROJECT_NAME}_node
 
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
+  roboteq_command_watchdog
   roboteq_command_scaling
   roboteq_odom_covariance
   roboteq_odom_tf
@@ -167,6 +177,7 @@ ament_export_dependencies(
 # ---------------------------------------------------------------------------
 install(TARGETS
   roboteq_protocol
+  roboteq_command_watchdog
   roboteq_command_scaling
   roboteq_odom_covariance
   roboteq_odom_tf
@@ -201,6 +212,14 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_roboteq_protocol
     roboteq_protocol
+  )
+
+  ament_add_gtest(test_command_watchdog
+    test/test_command_watchdog.cpp
+  )
+
+  target_link_libraries(test_command_watchdog
+    roboteq_command_watchdog
   )
 
   ament_add_gtest(test_odom_tf

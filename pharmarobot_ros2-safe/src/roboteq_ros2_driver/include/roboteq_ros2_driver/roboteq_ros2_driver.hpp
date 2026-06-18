@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
@@ -60,7 +61,11 @@ class Roboteq : public rclcpp::Node
   uint32_t hstimer{};
   uint32_t mstimer{};
   uint32_t lstimer{};
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr command_watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr odom_timer_;
+  rclcpp::CallbackGroup::SharedPtr command_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr feedback_callback_group_;
+  std::mutex serial_mutex_;
 
   // buffer for reading encoder counts
   unsigned int odom_idx{};
@@ -144,7 +149,7 @@ class Roboteq : public rclcpp::Node
   void connect();
 
   void update_parameters();
-  int run();
+  void command_watchdog_loop();
 
   //subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdvel_sub;
