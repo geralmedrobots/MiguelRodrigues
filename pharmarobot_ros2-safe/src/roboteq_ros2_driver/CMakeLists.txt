@@ -41,6 +41,15 @@ ament_export_dependencies(rosidl_default_runtime)
 # ---------------------------------------------------------------------------
 # Optional helper library
 # ---------------------------------------------------------------------------
+add_library(roboteq_protocol
+  src/roboteq_protocol.cpp
+)
+
+target_include_directories(roboteq_protocol PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(differential_drive_kinematics
   src/differential_drive_kinematics/differential_drive_kinematics.cpp
 )
@@ -63,6 +72,7 @@ add_executable(${PROJECT_NAME}_node
 
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
+  roboteq_protocol
 )
 
 ament_target_dependencies(${PROJECT_NAME}_node
@@ -78,13 +88,9 @@ ament_target_dependencies(${PROJECT_NAME}_node
 )
 
 # Link generated WheelTicks message interface
-rosidl_get_typesupport_target(cpp_typesupport_target
+rosidl_target_interfaces(${PROJECT_NAME}_node
   ${PROJECT_NAME}
   "rosidl_typesupport_cpp"
-)
-
-target_link_libraries(${PROJECT_NAME}_node
-  ${cpp_typesupport_target}
 )
 
 target_include_directories(${PROJECT_NAME}_node PUBLIC
@@ -112,6 +118,7 @@ ament_export_dependencies(
 # Installation
 # ---------------------------------------------------------------------------
 install(TARGETS
+  roboteq_protocol
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -133,7 +140,17 @@ install(DIRECTORY include/
 # Tests
 # ---------------------------------------------------------------------------
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+
+  ament_add_gtest(test_roboteq_protocol
+    test/test_roboteq_protocol.cpp
+  )
+
+  target_link_libraries(test_roboteq_protocol
+    roboteq_protocol
+  )
+
   ament_lint_auto_find_test_dependencies()
 endif()
 

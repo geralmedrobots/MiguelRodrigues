@@ -1,4 +1,5 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
+#include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 
 #include <algorithm>
@@ -567,26 +568,11 @@ std::vector<int> Roboteq::readEncoderCountRelative()
     }
     result = buffer;
 
-    // Parse result, expected format: "CR=1234:5678"
-    if (!result.empty() && result.find("CR=") == 0)
-    {
-        size_t colon_pos = result.find(':');
-        if (colon_pos != std::string::npos)
-        {
-            int ch1 = std::stoi(result.substr(3, colon_pos - 3));
-            int ch2 = std::stoi(result.substr(colon_pos + 1));
-            output.push_back(ch1);
-            output.push_back(ch2);
-            //RCLCPP_WARN(this->get_logger(), "Found encoder counts: %d, %d", ch1, ch2);
-        }
-        else
-        {
-            output.push_back(INT_MAX);
-            output.push_back(INT_MAX);
-        }
-    }
-    else
-    {
+    const auto encoder_counts = roboteq_ros2_driver::protocol::parse_encoder_counts(result);
+    if (encoder_counts.has_value()) {
+        output.push_back(encoder_counts->first);
+        output.push_back(encoder_counts->second);
+    } else {
         output.push_back(INT_MAX);
         output.push_back(INT_MAX);
     }
