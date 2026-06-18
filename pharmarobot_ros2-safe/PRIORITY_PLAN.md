@@ -32,7 +32,7 @@ Priority scale:
 | Stable USB device names | `/dev/ttyUSB0/1/2` can change after reboot/replug | **Solved in source; deployment validation required** | Install the generated udev rules once, verify all three symlinks, then reboot/replug-test before closing the item. |
 | Serial protocol robustness | `flushInput`, `stoi`, serial exceptions and blocking reads can hide/crash on faults | **Not solved** | Create a single serial transaction layer with bounded reads, parser validation and recovery. |
 | Controller configuration validation | Runtime startup overwrites MMOD/PID/EPPR without readback | **Not solved** | Separate commissioning from runtime; read back and verify each required setting. |
-| Dynamic odometry TF | SLAM needs valid `odom -> base_link`; legacy static transform was wrong | **Legacy fault removed; feature missing** | Implement dynamic TF from wheel odometry before SLAM. |
+| Dynamic odometry TF | SLAM needs valid `odom -> base_link`; legacy static transform was wrong | **Solved in source; runtime validation required** | Dynamic TF now comes from wheel odometry when `pub_odom_tf` is enabled. Validate the live TF graph on the robot before SLAM. |
 | Coupled wheel saturation | Combined linear/angular command can saturate one wheel asymmetrically | **Partially improved** | Final RPM/power is clamped, but proportional coupled scaling should replace independent clipping. |
 | Clean reproducible builds | Old `build/install/log` trees caused stale binaries | **Solved in repository** | Generated trees removed; always perform a clean build after replacing the workspace. |
 

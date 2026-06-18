@@ -181,8 +181,11 @@ This cleaned version improves process separation and adds command timeouts, but 
 - a physical hold-to-run deadman mapped in software;
 - SROS2 authentication/authorisation;
 - Roboteq STO/fault/status gating;
-- stable udev device names;
-- dynamic `odom -> base_link` TF.
+- stable udev device names.
+
+Dynamic `odom -> base_link` TF is published by `roboteq_ros2_driver` when
+`pub_odom_tf` is enabled, but the live TF graph must still be validated on the
+robot before SLAM use.
 
 Do not use it for unattended or autonomous operation until Priority 1 and Priority 2 items in `PRIORITY_PLAN.md` are closed and hardware-tested.
 

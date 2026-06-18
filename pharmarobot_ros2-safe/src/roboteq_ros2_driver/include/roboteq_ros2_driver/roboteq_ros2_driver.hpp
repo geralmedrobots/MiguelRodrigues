@@ -14,6 +14,7 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 
 #if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -148,6 +149,7 @@ class Roboteq : public rclcpp::Node
   //publisher
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Publisher<roboteq_ros2_driver::msg::WheelTicks>::SharedPtr ticks_publisher_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> odom_tf_broadcaster_;
 
 
 };

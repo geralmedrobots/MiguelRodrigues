@@ -1,6 +1,6 @@
 roboteq_ros2_driver:
   ros__parameters:
-    pub_odom_tf: false
+    pub_odom_tf: true
     odom_frame: "odom"
     base_frame: "base_link"
     cmdvel_topic: "/cmd_vel/safe"
@@ -17,4 +17,3 @@ roboteq_ros2_driver:
     max_rpm: 100
     channel_1: "right" # physical right motor
     channel_2: "left" # physical left motor
-

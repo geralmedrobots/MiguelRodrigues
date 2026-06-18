@@ -1,4 +1,5 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
+#include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 
@@ -16,8 +17,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/clock.hpp"
 #include <iostream>
-
-#include "std_msgs/msg/string.hpp"
 
 // dependencies for ROS
 #include <serial/serial.h>
@@ -44,8 +43,6 @@
 #define ROBORTEQ_WRITING_TIMEOUT 5 //
 
 
-#include <tf2_ros/transform_broadcaster.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 
 
@@ -543,8 +540,12 @@ void Roboteq::odom_setup()
     RCLCPP_INFO(this->get_logger(),"setting up odom...");
     if (pub_odom_tf)
     {
-        //TODO: implement tf2 broadcaster
-        
+        odom_tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Dynamic odom TF enabled: %s -> %s",
+            odom_frame.c_str(),
+            base_frame.c_str());
     }
 
     // maybe use this-> instead of
@@ -575,20 +576,6 @@ void Roboteq::odom_setup()
     odom_msg.twist.covariance[21] = 1000000;
     odom_msg.twist.covariance[28] = 1000000;
     odom_msg.twist.covariance[35] = 1000;
-
-    // Set up the transform message: move to odom_publish
-    /*
-    tf2::Quaternion q;
-    q.setRPY(0, 0, odom_yaw);
-
-    tf_msg.transform.translation.x = x;
-    tf_msg.transform.translation.y = y;
-    tf_msg.transform.translation.z = 0.0;
-    tf_msg.transform.rotation.x = q.x();
-    tf_msg.transform.rotation.y = q.y();
-    tf_msg.transform.rotation.z = q.z();
-    tf_msg.transform.rotation.w = q.w();
-    */
 
     // start encoder streaming
     RCLCPP_INFO_STREAM(this->get_logger(),"covariance set");
@@ -757,12 +744,6 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     // Convert tf2::Quaternion to geometry_msgs::msg::Quaternion
     geometry_msgs::msg::Quaternion quat = tf2::toMsg(tf2_quat);
 
-
-
-    //tf2::Quaternion quat = tf2::createQuaternionMsgFromYaw(odom_yaw);
-    // TODO: set up tf2_ros
-    //update odom msg
-
     //odom_msg.header.seq++; //? not used in ros2 ?
     odom_msg.header.stamp = this->get_clock()->now();
     odom_msg.pose.pose.position.x = odom_x;
@@ -775,6 +756,16 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     odom_msg.twist.twist.angular.x = 0.0;
     odom_msg.twist.twist.angular.y = 0.0;
     odom_msg.twist.twist.angular.z = 0.0;
+    if (odom_tf_broadcaster_) {
+        odom_tf_broadcaster_->sendTransform(
+            roboteq_ros2_driver::odom_tf::build_odom_to_base_transform(
+                odom_frame,
+                base_frame,
+                odom_msg.header.stamp,
+                odom_x,
+                odom_y,
+                odom_yaw));
+    }
     odom_pub->publish(odom_msg);
     // odom_pub.publish(odom_msg); ROS1
 }

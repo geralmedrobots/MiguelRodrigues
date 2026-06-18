@@ -73,12 +73,27 @@ Manual validation on real Roboteq hardware is still required to confirm the
 controller firmware returns configuration queries in the expected
 `<setting>=<int>` format.
 
-## Parser-only validation
+## Dynamic odometry TF
+
+When `pub_odom_tf` is true, the driver publishes a dynamic `odom -> base_link`
+transform from the same wheel-odometry pose used for `/odom`. The transform
+uses the odometry message timestamp, `odom_frame` as the parent frame,
+`base_frame` as the child frame, x/y translation from odometry, z translation
+set to zero, and the odometry yaw quaternion. The default runtime
+configuration enables this with `odom_frame: "odom"` and
+`base_frame: "base_link"`.
+
+This does not add or restore a static odom transform. Existing odometry math,
+encoder signs, wheel geometry, motor command generation, serial behaviour and
+safety logic are unchanged. Runtime TF graph validation on the robot is still
+required before enabling SLAM.
+
+## Parser and TF validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser test with:
+Roboteq protocol parser and odometry TF tests with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R test_roboteq_protocol
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_tf|test_roboteq_protocol"
 
 Inspect results with:
 
@@ -87,12 +102,12 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R test_roboteq_protocol
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_tf|test_roboteq_protocol"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
-The validated parser test result for this change was:
+The validated test result for this change was:
 
-    Summary: 9 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 12 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 
@@ -112,7 +127,7 @@ This driver assumes right motor is connected to channel 1 (M1) of motor controll
 ## TODO
 
 - [X] Initial ROS2 release with motor commands and odometry stream
-- [ ] Implement transform broadcasting with tf2
+- [X] Implement dynamic odometry transform broadcasting with tf2
 - [ ] Add roboteq/voltage, roboteq/current, roboteq/energy, and roboteq/temperature publishers
 - [ ] Make topic names and frames configuration parameters configurable at runtime.
 - [ ] Make robot configuration parameters configurable at runtime.

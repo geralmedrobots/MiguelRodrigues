@@ -20,6 +20,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -50,6 +51,21 @@ target_include_directories(roboteq_protocol PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_odom_tf
+  src/odom_tf.cpp
+)
+
+target_include_directories(roboteq_odom_tf PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(roboteq_odom_tf
+  builtin_interfaces
+  geometry_msgs
+  tf2
+)
+
 add_library(differential_drive_kinematics
   src/differential_drive_kinematics/differential_drive_kinematics.cpp
 )
@@ -72,6 +88,7 @@ add_executable(${PROJECT_NAME}_node
 
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
+  roboteq_odom_tf
   roboteq_protocol
 )
 
@@ -82,6 +99,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   sensor_msgs
   nav_msgs
   geometry_msgs
+  builtin_interfaces
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -119,6 +137,7 @@ ament_export_dependencies(
 # ---------------------------------------------------------------------------
 install(TARGETS
   roboteq_protocol
+  roboteq_odom_tf
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -149,6 +168,14 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_roboteq_protocol
     roboteq_protocol
+  )
+
+  ament_add_gtest(test_odom_tf
+    test/test_odom_tf.cpp
+  )
+
+  target_link_libraries(test_odom_tf
+    roboteq_odom_tf
   )
 
   ament_lint_auto_find_test_dependencies()
