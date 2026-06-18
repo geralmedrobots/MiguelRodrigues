@@ -1,0 +1,85 @@
+PharmaRobot Implemented Changes by Patch
+========================================
+
+v2_to_v3_command_arbiter.patch
+------------------------------
+- Added a new command_arbiter ROS 2 package.
+- Changed joystick velocity output from /cmd_vel to /cmd_vel/joy.
+- Added a protected motor-command output topic: /cmd_vel/safe.
+- Changed the Roboteq driver to subscribe to /cmd_vel/safe instead of the old direct /cmd_vel topic.
+- Added priority-based command selection between joystick, test, and future navigation sources.
+- Added timeout expiration for each command source.
+- Added zero-command output when no valid command source is available.
+- Updated optional test tools to publish to /cmd_vel/test rather than directly to the Roboteq driver.
+- Added command arbiter integration tests.
+- Updated the control launch to include joy_node, joy_to_cmdvel, command_arbiter, and roboteq_ros2_driver.
+
+v3_to_v4_l1_deadman.patch
+-------------------------
+- Added a hold-to-run deadman mechanism to joy_to_cmdvel.
+- Configured L1 as the enable button using button index 4.
+- Blocked non-zero joystick movement unless L1 is held.
+- Added immediate zero output when L1 is released.
+- Kept joystick-loss timeout behaviour so loss of /joy messages produces a stop command.
+- Added the enable_button_index parameter.
+- Added joystick deadman integration tests.
+- Updated test descriptions and logic to reference L1.
+
+Reverse steering correction
+---------------------------
+- Added the reverse_steering parameter to joy_to_cmdvel.
+- Inverted joystick steering only when the linear command is negative.
+- Preserved normal forward steering behaviour.
+- Preserved pure rotation-in-place behaviour.
+- Renamed the parameter from reverse_steering_like_car to reverse_steering.
+
+Persistent Docker image and dependency fix
+------------------------------------------
+- Fixed the Dockerfile package installation order.
+- Added ros-humble-joy-linux as a persistent Docker image dependency.
+- Built and used a versioned local Docker image instead of relying on manual apt-get installation inside a running container.
+- Confirmed joy_linux and joy_linux_node are available after container recreation.
+- Confirmed workspace packages are available after sourcing /ros_ws/install/setup.bash.
+
+v4_to_v5_stable_usb_names.patch
+-------------------------------
+- Added tooling to generate stable udev names for serial devices.
+- Added intended stable device names: /dev/roboteq, /dev/lidar_front, and /dev/lidar_back.
+- Added a USB device checker script.
+- Added support for configuring Roboteq and LiDAR ports through /etc/default/pharmarobot.
+- Updated the planned runtime configuration to use stable names instead of raw /dev/ttyUSB* names.
+
+v5_to_v6_serial_protocol_robustness.patch
+-----------------------------------------
+- Added a RoboteqSerialTransport serial transaction layer.
+- Centralized Roboteq serial reads and writes in one transport class.
+- Removed unsafe serial flushInput usage from the driver path.
+- Replaced fragile std::stoi parsing with strict integer parsing.
+- Added bounded serial read and transaction timeouts.
+- Added complete-write validation.
+- Added Roboteq command acknowledgment checking.
+- Added command rejection detection.
+- Added parser validation for encoder-relative responses.
+- Added maximum response size protection.
+- Added consecutive serial failure tracking.
+- Added serial reconnection handling.
+- Added motor-command inhibition while the serial link is unhealthy.
+- Added parser unit tests for valid, malformed, and overflowing encoder responses.
+- Fixed the C++ uint32_t std::max compile issue after the patch.
+- Fixed package.xml dependency ordering after the patch.
+
+Systemd and service supervision improvements
+--------------------------------------------
+- Replaced detached docker exec bring-up behaviour with foreground ROS launch services.
+- Split the robot into independent control and LiDAR services.
+- Updated stop scripts to target specific control or LiDAR processes.
+- Reduced the risk of restarting one stack killing the other stack.
+- Added handling for expected SIGINT/SIGTERM shutdown return codes.
+- Added deployment scripts for installing services and starting/stopping the container, control stack, and LiDAR stack.
+
+Cleaned runtime workspace structure
+-----------------------------------
+- Removed legacy launch paths from active use.
+- Removed Kalman and obsolete combined bring-up from the active runtime path.
+- Kept optional test/log packages disabled by default using COLCON_IGNORE.
+- Kept odometry and robot log directories available without launching their loggers automatically.

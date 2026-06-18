@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>odom_test_logger</name>
+  <version>0.0.1</version>
+  <description>Dedicated odometry test logger for PharmaRobot.</description>
+
+  <maintainer email="medrobots@example.com">medrobots</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>roboteq_ros2_driver</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

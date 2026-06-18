@@ -1,0 +1,20 @@
+roboteq_ros2_driver:
+  ros__parameters:
+    pub_odom_tf: false
+    odom_frame: "odom"
+    base_frame: "base_link"
+    cmdvel_topic: "/cmd_vel/safe"
+    odom_topic: "odom"
+    port: "/dev/roboteq"
+    baud: 115200
+    open_loop: false # false -> closed-loop speed control
+    cmd_timeout_s: 0.5
+    wheel_radius: 0.0881
+    wheelbase: 0.453
+    encoder_ppr: -1024
+    encoder_cpr: -4096
+    max_amps: 5.0
+    max_rpm: 100
+    channel_1: "right" # physical right motor
+    channel_2: "left" # physical left motor
+
