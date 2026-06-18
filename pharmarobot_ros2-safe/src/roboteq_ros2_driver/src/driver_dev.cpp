@@ -1,4 +1,5 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
+#include "roboteq_ros2_driver/command_scaling.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
@@ -334,12 +335,12 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     {
         // motor power (scale 0-1000)
         RCLCPP_INFO_STREAM(this->get_logger(),"open loop");
-        int32_t channel_1_power = static_cast<int32_t>(
-            channel_1_speed / wheel_circumference * 60.0 / max_rpm * 1000.0);
-        int32_t channel_2_power = static_cast<int32_t>(
-            channel_2_speed / wheel_circumference * 60.0 / max_rpm * 1000.0);
-        channel_1_power = std::clamp(channel_1_power, -1000, 1000);
-        channel_2_power = std::clamp(channel_2_power, -1000, 1000);
+        const auto powers = roboteq_ros2_driver::command_scaling::scale_pair_to_limit(
+            channel_1_speed / wheel_circumference * 60.0 / max_rpm * 1000.0,
+            channel_2_speed / wheel_circumference * 60.0 / max_rpm * 1000.0,
+            1000.0);
+        const int32_t channel_1_power = static_cast<int32_t>(powers.first);
+        const int32_t channel_2_power = static_cast<int32_t>(powers.second);
 
         
         channel_1_cmd << "!G 1 " << channel_1_power << "\r";
@@ -348,12 +349,12 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     else
     {
         // motor speed (rpm)
-        int32_t channel_1_rpm = static_cast<int32_t>(
-            channel_1_speed / wheel_circumference * 60.0);
-        int32_t channel_2_rpm = static_cast<int32_t>(
-            channel_2_speed / wheel_circumference * 60.0);
-        channel_1_rpm = std::clamp(channel_1_rpm, -max_rpm, max_rpm);
-        channel_2_rpm = std::clamp(channel_2_rpm, -max_rpm, max_rpm);
+        const auto rpms = roboteq_ros2_driver::command_scaling::scale_pair_to_limit(
+            channel_1_speed / wheel_circumference * 60.0,
+            channel_2_speed / wheel_circumference * 60.0,
+            max_rpm);
+        const int32_t channel_1_rpm = static_cast<int32_t>(rpms.first);
+        const int32_t channel_2_rpm = static_cast<int32_t>(rpms.second);
         
         channel_1_cmd << "!S 1 " << channel_1_rpm << "\r";
         channel_2_cmd << "!S 2 " << channel_2_rpm << "\r";

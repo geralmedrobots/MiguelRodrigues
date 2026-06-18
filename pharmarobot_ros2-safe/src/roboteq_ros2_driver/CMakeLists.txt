@@ -66,6 +66,15 @@ ament_target_dependencies(roboteq_odom_tf
   tf2
 )
 
+add_library(roboteq_command_scaling
+  src/command_scaling.cpp
+)
+
+target_include_directories(roboteq_command_scaling PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(differential_drive_kinematics
   src/differential_drive_kinematics/differential_drive_kinematics.cpp
 )
@@ -88,6 +97,7 @@ add_executable(${PROJECT_NAME}_node
 
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
+  roboteq_command_scaling
   roboteq_odom_tf
   roboteq_protocol
 )
@@ -137,6 +147,7 @@ ament_export_dependencies(
 # ---------------------------------------------------------------------------
 install(TARGETS
   roboteq_protocol
+  roboteq_command_scaling
   roboteq_odom_tf
   differential_drive_kinematics
   ${PROJECT_NAME}_node
@@ -176,6 +187,14 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_odom_tf
     roboteq_odom_tf
+  )
+
+  ament_add_gtest(test_command_scaling
+    test/test_command_scaling.cpp
+  )
+
+  target_link_libraries(test_command_scaling
+    roboteq_command_scaling
   )
 
   ament_lint_auto_find_test_dependencies()

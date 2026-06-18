@@ -88,12 +88,29 @@ encoder signs, wheel geometry, motor command generation, serial behaviour and
 safety logic are unchanged. Runtime TF graph validation on the robot is still
 required before enabling SLAM.
 
-## Parser and TF validation
+## Coupled wheel command saturation
+
+The `cmd_vel` to Roboteq command conversion scales left and right wheel
+commands together when either wheel would exceed the configured limit. In
+closed-loop mode the shared limit is `max_rpm`; in open-loop mode the shared
+motor-power limit is `1000`.
+
+This replaces independent per-wheel clipping. If a mixed linear/angular command
+would saturate one side, both wheel commands are reduced by the same factor so
+the requested left/right ratio and curvature are preserved as closely as
+possible before the existing integer command conversion.
+
+This change does not alter motor direction, channel assignment, encoder sign,
+wheel radius, wheel separation, command timeout handling, serial port names, or
+emergency stop behavior. Manual validation on the robot is still required before
+using new operating envelopes with real motors.
+
+## Parser, TF and command scaling validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser and odometry TF tests with:
+Roboteq protocol parser, odometry TF, and command scaling tests with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_tf|test_roboteq_protocol"
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_scaling|test_odom_tf|test_roboteq_protocol"
 
 Inspect results with:
 
@@ -102,12 +119,12 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_tf|test_roboteq_protocol"
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_scaling|test_odom_tf|test_roboteq_protocol"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
-The validated test result for this change was:
+The validated test result for the current driver change set was:
 
-    Summary: 12 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 23 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 
