@@ -14,6 +14,8 @@ namespace protocol
 std::optional<std::string> parse_firmware_id(const std::string & response);
 std::optional<std::vector<int>> parse_voltage_fields(const std::string & response);
 std::optional<std::pair<int, int>> parse_encoder_counts(const std::string & response);
+std::optional<int> parse_config_readback(
+  const std::string & response, const std::string & setting_name);
 
 }  // namespace protocol
 }  // namespace roboteq_ros2_driver

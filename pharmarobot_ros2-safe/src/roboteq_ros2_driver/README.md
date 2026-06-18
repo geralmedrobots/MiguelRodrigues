@@ -47,9 +47,36 @@ This parser robustness change is limited to rejecting malformed encoder input.
 It does not intentionally change motor-command generation, serial write
 commands, launch files, hardware parameters, or safety logic.
 
+## Startup controller configuration validation
+
+Normal runtime startup validates required Roboteq controller settings by
+readback instead of blindly overwriting persistent controller configuration.
+The driver sends the existing conservative zero-stop commands first, then
+queries required settings such as `MMOD`, `ALIM`, `MXRPM`, `MAC`, `MDEC`,
+`KP`, `KI`, `KD`, `EPPR`, `ECHOF`, and `RWD`.
+
+Each readback must parse as `<setting>=<int>` and match the expected value
+derived from the ROS parameters and driver constants. If a setting is missing,
+malformed, unreadable, or mismatched, startup logs the failing setting, sends a
+stop command where possible, closes the serial port, and aborts normal runtime
+startup. `cmd_vel` commands are rejected unless controller configuration has
+validated successfully.
+
+This separates commissioning from runtime startup. Commissioning tools should
+set persistent Roboteq parameters before this node is started; this node now
+reports mismatches instead of silently changing them. Motor command generation,
+wheel geometry, channel assignment, encoder sign, launch files, serial port
+names, and emergency stop behavior are not intentionally changed by this
+validation path.
+
+Manual validation on real Roboteq hardware is still required to confirm the
+controller firmware returns configuration queries in the expected
+`<setting>=<int>` format.
+
 ## Parser-only validation
 
-After building the workspace, run the Roboteq protocol parser test with:
+After sourcing the ROS Foxy environment and building the workspace, run the
+Roboteq protocol parser test with:
 
     colcon test --packages-select roboteq_ros2_driver --ctest-args -R test_roboteq_protocol
 
@@ -57,9 +84,15 @@ Inspect results with:
 
     colcon test-result --verbose
 
-The validated parser test result was:
+The validated commands for this change were:
 
-    Summary: 8 tests, 0 errors, 0 failures, 0 skipped
+    source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R test_roboteq_protocol
+    source /opt/ros/foxy/setup.bash && colcon test-result --verbose
+
+The validated parser test result for this change was:
+
+    Summary: 9 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 

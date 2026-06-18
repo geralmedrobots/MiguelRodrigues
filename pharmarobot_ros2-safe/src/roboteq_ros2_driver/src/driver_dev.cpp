@@ -7,7 +7,11 @@
 #include <cmath>
 #include <functional> 
 #include <memory>     
+#include <optional>
+#include <stdexcept>
 #include <string>     
+#include <thread>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/clock.hpp"
@@ -52,6 +56,43 @@ namespace
 {
 constexpr double kCommandAngularSign = -1.0;
 constexpr int kSerialReadDelayMs = 20;
+
+struct RequiredConfigSetting
+{
+    const char * name;
+    int channel;
+    int expected_value;
+};
+
+std::vector<RequiredConfigSetting> required_controller_settings(
+    bool open_loop, int encoder_ppr, double max_amps, int max_rpm)
+{
+    const int motor_mode = open_loop ? 0 : 1;
+    const int amp_limit = static_cast<int>(max_amps * 10);
+
+    return {
+        {"ECHOF", 0, 1},
+        {"RWD", 0, 1000},
+        {"MMOD", 1, motor_mode},
+        {"MMOD", 2, motor_mode},
+        {"ALIM", 1, amp_limit},
+        {"ALIM", 2, amp_limit},
+        {"MXRPM", 1, max_rpm},
+        {"MXRPM", 2, max_rpm},
+        {"MAC", 1, 20000},
+        {"MAC", 2, 20000},
+        {"MDEC", 1, 20000},
+        {"MDEC", 2, 20000},
+        {"KP", 1, 1},
+        {"KP", 2, 1},
+        {"KI", 1, 7},
+        {"KI", 2, 7},
+        {"KD", 1, 0},
+        {"KD", 2, 0},
+        {"EPPR", 1, encoder_ppr},
+        {"EPPR", 2, encoder_ppr},
+    };
+}
 }
 
 uint32_t millis()
@@ -122,7 +163,19 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     // set up parameters for dynamic reconfigure
     connect();
     // configure motor controller
-    cmdvel_setup();
+    try {
+        cmdvel_setup();
+    } catch (const std::exception & ex) {
+        RCLCPP_FATAL(
+            this->get_logger(),
+            "Roboteq startup validation failed; normal runtime startup aborted: %s",
+            ex.what());
+        if (controller.isOpen()) {
+            send_stop_command("startup validation failed");
+            controller.close();
+        }
+        throw;
+    }
     odom_setup();
 //
 //  odom publisher
@@ -204,6 +257,12 @@ void Roboteq::connect(){
 
 void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_msg)
 {
+    if (!controller_config_valid_) {
+        RCLCPP_ERROR(this->get_logger(), "Rejected cmd_vel because Roboteq configuration is not validated");
+        send_stop_command("controller configuration not validated");
+        return;
+    }
+
     if (!std::isfinite(twist_msg->linear.x) || !std::isfinite(twist_msg->angular.z)) {
         RCLCPP_ERROR(this->get_logger(), "Rejected non-finite cmd_vel command");
         send_stop_command("non-finite cmd_vel");
@@ -363,7 +422,8 @@ void Roboteq::send_stop_command(const char * reason)
 
 void Roboteq::cmdvel_setup()
 {
-    RCLCPP_INFO(this->get_logger(), "configuring motor controller...");
+    RCLCPP_INFO(this->get_logger(), "validating motor controller configuration...");
+    controller_config_valid_ = false;
 
     // stop motors
     controller.write("!G 1 0\r");
@@ -372,83 +432,105 @@ void Roboteq::cmdvel_setup()
     controller.write("!S 2 0\r");
     controller.flush();
 
-    // disable echo
-    controller.write("^ECHOF 1\r");
-    controller.flush();
-
-    // enable watchdog timer (1000 ms)
-    controller.write("^RWD 1000\r");
-
-    
-
-    // set motor operating mode (1 for closed-loop speed)
-    if (open_loop)
-    {
-        // open-loop speed mode
-        controller.write("^MMOD 1 0\r");
-        controller.write("^MMOD 2 0\r");
+    if (!validate_controller_configuration()) {
+        throw std::runtime_error("required Roboteq controller configuration does not match");
     }
-    else
-    {
-        // closed-loop speed mode
-        controller.write("^MMOD 1 1\r");
-        controller.write("^MMOD 2 1\r");
+    controller_config_valid_ = true;
+    RCLCPP_INFO(this->get_logger(), "Roboteq controller configuration validated");
+}
+
+std::optional<int> Roboteq::read_controller_config_int(
+    const std::string & setting_name, int channel)
+{
+    if (!controller.isOpen()) {
+        RCLCPP_ERROR(
+            this->get_logger(),
+            "Cannot validate Roboteq setting %s: serial port is not open",
+            setting_name.c_str());
+        return std::nullopt;
     }
 
-    
-    // set motor amps limit (A * 10)
-    std::stringstream right_ampcmd;
-    std::stringstream left_ampcmd;
-    right_ampcmd << "^ALIM 1 " << (int)(max_amps * 10) << "\r";
-    left_ampcmd << "^ALIM 2 " << (int)(max_amps * 10) << "\r";
-    controller.write(right_ampcmd.str());
-    controller.write(left_ampcmd.str());
+    std::stringstream query;
+    query << "~" << setting_name;
+    if (channel > 0) {
+        query << " " << channel;
+    }
+    query << "\r";
 
-    // set max speed (rpm) for relative speed commands
-    std::stringstream right_rpmcmd;
-    std::stringstream left_rpmcmd;
-    right_rpmcmd << "^MXRPM 1 " << max_rpm << "\r";
-    left_rpmcmd  << "^MXRPM 2 " << max_rpm << "\r";
-    
-    controller.write(right_rpmcmd.str());
-    controller.write(left_rpmcmd.str());
-
-    // set max acceleration rate (2000 rpm/s * 10)
-    controller.write("^MAC 1 20000\r");
-    controller.write("^MAC 2 20000\r");
-
-    // set max deceleration rate (2000 rpm/s * 10)
-    controller.write("^MDEC 1 20000\r");
-    controller.write("^MDEC 2 20000\r");
-
-    
-    
-    
-    // set PID parameters (gain * 10)
-    controller.write("^KP 1 1\r");
-    controller.write("^KP 2 1\r");
-    controller.write("^KI 1 7\r");
-    controller.write("^KI 2 7\r");
-    controller.write("^KD 1 0\r");
-    controller.write("^KD 2 0\r");
-    
-    
-    // set encoder mode (18 for feedback on motor1, 34 for feedback on motor2)
-    //controller.write("^EMOD 1 18\r");
-    //controller.write("^EMOD 2 34\r");
-    
-    
-    // set encoder counts (ppr)
-    std::stringstream right_enccmd;
-    std::stringstream left_enccmd;
-
-    right_enccmd << "^EPPR 1 " << encoder_ppr << "\r";
-    left_enccmd << "^EPPR 2 " << encoder_ppr << "\r";
-    
-    controller.write(right_enccmd.str());
-    controller.write(left_enccmd.str());
-
+    controller.flushInput();
+    controller.write(query.str());
     controller.flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(kSerialReadDelayMs));
+
+    std::string line;
+    while (controller.available())
+    {
+        char ch = 0;
+        if (controller.read((uint8_t *)&ch, 1) == 0) {
+            break;
+        }
+
+        if (ch == '\r' || ch == '\n') {
+            if (!line.empty()) {
+                const auto parsed = roboteq_ros2_driver::protocol::parse_config_readback(
+                    line, setting_name);
+                if (parsed.has_value()) {
+                    return parsed;
+                }
+                line.clear();
+            }
+            continue;
+        }
+        line += ch;
+    }
+
+    if (!line.empty()) {
+        const auto parsed = roboteq_ros2_driver::protocol::parse_config_readback(
+            line, setting_name);
+        if (parsed.has_value()) {
+            return parsed;
+        }
+    }
+
+    const std::string channel_label = channel > 0 ? " channel " + std::to_string(channel) : "";
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Roboteq setting %s%s readback was missing or malformed",
+        setting_name.c_str(),
+        channel_label.c_str());
+    return std::nullopt;
+}
+
+bool Roboteq::validate_controller_configuration()
+{
+    bool valid = true;
+    for (const auto & setting : required_controller_settings(
+        open_loop, encoder_ppr, max_amps, max_rpm))
+    {
+        const auto actual = read_controller_config_int(setting.name, setting.channel);
+        if (!actual.has_value()) {
+            valid = false;
+            continue;
+        }
+
+        if (*actual != setting.expected_value) {
+            const std::string channel_label =
+                setting.channel > 0 ? " channel " + std::to_string(setting.channel) : "";
+            RCLCPP_ERROR(
+                this->get_logger(),
+                "Roboteq configuration mismatch: %s%s expected %d but read %d",
+                setting.name,
+                channel_label.c_str(),
+                setting.expected_value,
+                *actual);
+            valid = false;
+        }
+    }
+
+    if (!valid) {
+        send_stop_command("controller configuration validation failed");
+    }
+    return valid;
 }
 
 void Roboteq::cmdvel_loop()

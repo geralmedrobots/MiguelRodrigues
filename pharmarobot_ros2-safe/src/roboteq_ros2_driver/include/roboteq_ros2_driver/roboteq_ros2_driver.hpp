@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
@@ -43,6 +44,7 @@ class Roboteq : public rclcpp::Node
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
+  bool controller_config_valid_ = false;
   double cmd_timeout_s_ = 0.5;
 
   DifferentialDriveKinematics differential_drive_kinematics_;
@@ -119,6 +121,8 @@ class Roboteq : public rclcpp::Node
   void cmdvel_loop();
   void cmdvel_run();
   void send_stop_command(const char * reason);
+  bool validate_controller_configuration();
+  std::optional<int> read_controller_config_int(const std::string & setting_name, int channel);
  
   std::vector<int> readEncoderCountRelative();
 
