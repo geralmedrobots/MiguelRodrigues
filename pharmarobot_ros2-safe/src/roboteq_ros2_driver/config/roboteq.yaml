@@ -17,3 +17,15 @@ roboteq_ros2_driver:
     max_rpm: 100
     channel_1: "right" # physical right motor
     channel_2: "left" # physical left motor
+    odom_pose_covariance_x: 0.05
+    odom_pose_covariance_y: 0.10
+    odom_pose_covariance_z: 1000000.0
+    odom_pose_covariance_roll: 1000000.0
+    odom_pose_covariance_pitch: 1000000.0
+    odom_pose_covariance_yaw: 0.25
+    odom_twist_covariance_linear_x: 0.10
+    odom_twist_covariance_linear_y: 1000000.0
+    odom_twist_covariance_linear_z: 1000000.0
+    odom_twist_covariance_angular_x: 1000000.0
+    odom_twist_covariance_angular_y: 1000000.0
+    odom_twist_covariance_angular_z: 0.50

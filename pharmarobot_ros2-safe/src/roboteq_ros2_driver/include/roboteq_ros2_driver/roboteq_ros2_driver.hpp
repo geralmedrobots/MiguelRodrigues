@@ -29,6 +29,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
+#include "roboteq_ros2_driver/odom_covariance.hpp"
 
 
 #define PI M_PI 
@@ -108,6 +109,7 @@ class Roboteq : public rclcpp::Node
   int max_rpm{};
   std::string channel_1{};
   std::string channel_2{};
+  roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig odom_covariance_config_{};
   // Test different odom msg memory
   //nav_msgs::msg::Odometry odom_msg{};
   nav_msgs::msg::Odometry odom_msg{};

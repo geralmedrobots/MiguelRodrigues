@@ -106,6 +106,49 @@ signs, wheel radius, wheel separation, channel assignment, motor command
 generation, serial behaviour, or safety logic. Manual validation on the robot
 is still required to confirm `/odom` twist values match observed motion.
 
+## Odometry covariance
+
+The `/odom` publisher uses explicit diagonal covariance parameters for
+`nav_msgs/msg/Odometry`. Pose covariance is ordered as
+`[x, y, z, roll, pitch, yaw]`; twist covariance is ordered as
+`[linear.x, linear.y, linear.z, angular.x, angular.y, angular.z]`. The diagonal
+indices are `0`, `7`, `14`, `21`, `28`, and `35`; all off-diagonal entries are
+zero.
+
+Default conservative fallback variances:
+
+    odom_pose_covariance_x: 0.05
+    odom_pose_covariance_y: 0.10
+    odom_pose_covariance_z: 1000000.0
+    odom_pose_covariance_roll: 1000000.0
+    odom_pose_covariance_pitch: 1000000.0
+    odom_pose_covariance_yaw: 0.25
+    odom_twist_covariance_linear_x: 0.10
+    odom_twist_covariance_linear_y: 1000000.0
+    odom_twist_covariance_linear_z: 1000000.0
+    odom_twist_covariance_angular_x: 1000000.0
+    odom_twist_covariance_angular_y: 1000000.0
+    odom_twist_covariance_angular_z: 0.50
+
+The observed planar wheel-odometry DOFs are pose `x`, `y`, `yaw` and twist
+`linear.x`, `angular.z`. Unobserved DOFs use high covariance: pose `z`, `roll`,
+`pitch` and twist `linear.y`, `linear.z`, `angular.x`, `angular.y`. Negative,
+NaN, or infinite covariance parameters are rejected at startup and replaced
+with the conservative default for that field.
+
+These defaults are not calibrated robot-specific values. To calibrate them,
+record ground-truth and wheel-odometry trajectories over representative
+straight, reverse, turning, and mixed-motion runs. Compute the odometry error
+variance for pose and twist terms, then configure the measured variances with a
+safety margin. Keep unobserved DOFs high unless another sensor independently
+measures them.
+
+This change does not alter pose integration, twist calculation, dynamic TF,
+encoder signs, wheel radius, wheel separation, channel assignment, motor
+command generation, serial behaviour, or safety logic. Manual validation on the
+robot is still required before relying on the covariance values for SLAM,
+localization, or sensor fusion.
+
 ## Coupled wheel command saturation
 
 The `cmd_vel` to Roboteq command conversion scales left and right wheel
@@ -123,13 +166,13 @@ wheel radius, wheel separation, command timeout handling, serial port names, or
 emergency stop behavior. Manual validation on the robot is still required before
 using new operating envelopes with real motors.
 
-## Parser, TF, twist and command scaling validation
+## Parser, TF, twist, covariance and command scaling validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser, odometry TF, odometry twist, and command scaling tests
-with:
+Roboteq protocol parser, odometry TF, odometry twist, odometry covariance, and
+command scaling tests with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_covariance|test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
 
 Inspect results with:
 
@@ -138,12 +181,12 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_odom_covariance|test_odom_twist|test_odom_tf|test_roboteq_protocol|test_command_scaling"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
 The validated test result for the current driver change set was:
 
-    Summary: 32 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 38 tests, 0 errors, 0 failures, 0 skipped
 
 ## ROS Foxy build note
 

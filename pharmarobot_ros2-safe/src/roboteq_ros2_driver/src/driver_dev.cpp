@@ -1,5 +1,6 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/command_scaling.hpp"
+#include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/odom_twist.hpp"
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
@@ -92,6 +93,51 @@ std::vector<RequiredConfigSetting> required_controller_settings(
         {"EPPR", 2, encoder_ppr},
     };
 }
+
+double sanitize_covariance_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    double value,
+    double fallback)
+{
+    const double sanitized = roboteq_ros2_driver::odom_covariance::sanitize_variance(value, fallback);
+    if (sanitized != value) {
+        RCLCPP_WARN(
+            logger,
+            "Invalid odometry covariance parameter '%s'=%.6f; using default %.6f",
+            name,
+            value,
+            fallback);
+    }
+    return sanitized;
+}
+
+roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig sanitize_covariance_config_with_logging(
+    const rclcpp::Logger & logger,
+    const roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig & config)
+{
+    const auto defaults = roboteq_ros2_driver::odom_covariance::default_config();
+    return {
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_x", config.pose_x, defaults.pose_x),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_y", config.pose_y, defaults.pose_y),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_z", config.pose_z, defaults.pose_z),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_roll", config.pose_roll, defaults.pose_roll),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_pitch", config.pose_pitch, defaults.pose_pitch),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_yaw", config.pose_yaw, defaults.pose_yaw),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_x", config.twist_linear_x, defaults.twist_linear_x),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_y", config.twist_linear_y, defaults.twist_linear_y),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_z", config.twist_linear_z, defaults.twist_linear_z),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_x", config.twist_angular_x, defaults.twist_angular_x),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_y", config.twist_angular_y, defaults.twist_angular_y),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_z", config.twist_angular_z, defaults.twist_angular_z),
+    };
+}
 }
 
 uint32_t millis()
@@ -125,6 +171,31 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     channel_1 = this->declare_parameter("channel_1", "right");
     channel_2 = this->declare_parameter("channel_2", "left");
     cmd_timeout_s_ = this->declare_parameter("cmd_timeout_s", 0.5);
+    const auto default_covariance = roboteq_ros2_driver::odom_covariance::default_config();
+    odom_covariance_config_.pose_x =
+        this->declare_parameter("odom_pose_covariance_x", default_covariance.pose_x);
+    odom_covariance_config_.pose_y =
+        this->declare_parameter("odom_pose_covariance_y", default_covariance.pose_y);
+    odom_covariance_config_.pose_z =
+        this->declare_parameter("odom_pose_covariance_z", default_covariance.pose_z);
+    odom_covariance_config_.pose_roll =
+        this->declare_parameter("odom_pose_covariance_roll", default_covariance.pose_roll);
+    odom_covariance_config_.pose_pitch =
+        this->declare_parameter("odom_pose_covariance_pitch", default_covariance.pose_pitch);
+    odom_covariance_config_.pose_yaw =
+        this->declare_parameter("odom_pose_covariance_yaw", default_covariance.pose_yaw);
+    odom_covariance_config_.twist_linear_x =
+        this->declare_parameter("odom_twist_covariance_linear_x", default_covariance.twist_linear_x);
+    odom_covariance_config_.twist_linear_y =
+        this->declare_parameter("odom_twist_covariance_linear_y", default_covariance.twist_linear_y);
+    odom_covariance_config_.twist_linear_z =
+        this->declare_parameter("odom_twist_covariance_linear_z", default_covariance.twist_linear_z);
+    odom_covariance_config_.twist_angular_x =
+        this->declare_parameter("odom_twist_covariance_angular_x", default_covariance.twist_angular_x);
+    odom_covariance_config_.twist_angular_y =
+        this->declare_parameter("odom_twist_covariance_angular_y", default_covariance.twist_angular_y);
+    odom_covariance_config_.twist_angular_z =
+        this->declare_parameter("odom_twist_covariance_angular_z", default_covariance.twist_angular_z);
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     differential_drive_kinematics_.initParam(wheel_radius, wheelbase, encoder_cpr);
@@ -225,6 +296,18 @@ void Roboteq::update_parameters()
     this->get_parameter("channel_1", channel_1);
     this->get_parameter("channel_2", channel_2);
     this->get_parameter("cmd_timeout_s", cmd_timeout_s_);
+    this->get_parameter("odom_pose_covariance_x", odom_covariance_config_.pose_x);
+    this->get_parameter("odom_pose_covariance_y", odom_covariance_config_.pose_y);
+    this->get_parameter("odom_pose_covariance_z", odom_covariance_config_.pose_z);
+    this->get_parameter("odom_pose_covariance_roll", odom_covariance_config_.pose_roll);
+    this->get_parameter("odom_pose_covariance_pitch", odom_covariance_config_.pose_pitch);
+    this->get_parameter("odom_pose_covariance_yaw", odom_covariance_config_.pose_yaw);
+    this->get_parameter("odom_twist_covariance_linear_x", odom_covariance_config_.twist_linear_x);
+    this->get_parameter("odom_twist_covariance_linear_y", odom_covariance_config_.twist_linear_y);
+    this->get_parameter("odom_twist_covariance_linear_z", odom_covariance_config_.twist_linear_z);
+    this->get_parameter("odom_twist_covariance_angular_x", odom_covariance_config_.twist_angular_x);
+    this->get_parameter("odom_twist_covariance_angular_y", odom_covariance_config_.twist_angular_y);
+    this->get_parameter("odom_twist_covariance_angular_z", odom_covariance_config_.twist_angular_z);
 
     
 
@@ -558,26 +641,12 @@ void Roboteq::odom_setup()
     odom_msg.header.frame_id = odom_frame;
     odom_msg.child_frame_id = base_frame;
 
-    // Set up the pose covariance
-    for (size_t i = 0; i < 36; i++)
-    {
-        odom_msg.pose.covariance[i] = 0;
-        odom_msg.twist.covariance[i] = 0;
-    }
-
-    odom_msg.pose.covariance[7] = 0.001;
-    odom_msg.pose.covariance[14] = 1000000;
-    odom_msg.pose.covariance[21] = 1000000;
-    odom_msg.pose.covariance[28] = 1000000;
-    odom_msg.pose.covariance[35] = 1000;
-
-    // Set up the twist covariance
-    odom_msg.twist.covariance[0] = 0.001;
-    odom_msg.twist.covariance[7] = 0.001;
-    odom_msg.twist.covariance[14] = 1000000;
-    odom_msg.twist.covariance[21] = 1000000;
-    odom_msg.twist.covariance[28] = 1000000;
-    odom_msg.twist.covariance[35] = 1000;
+    const auto covariance_config =
+        sanitize_covariance_config_with_logging(this->get_logger(), odom_covariance_config_);
+    odom_msg.pose.covariance =
+        roboteq_ros2_driver::odom_covariance::build_pose_covariance(covariance_config);
+    odom_msg.twist.covariance =
+        roboteq_ros2_driver::odom_covariance::build_twist_covariance(covariance_config);
 
     // start encoder streaming
     RCLCPP_INFO_STREAM(this->get_logger(),"covariance set");
