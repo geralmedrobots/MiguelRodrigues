@@ -31,6 +31,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
+#include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
 
 #define PI M_PI 
@@ -47,7 +48,6 @@ class Roboteq : public rclcpp::Node
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
-  bool controller_config_valid_ = false;
   bool odom_twist_initialized_ = false;
   double cmd_timeout_s_ = 0.5;
 
@@ -65,7 +65,7 @@ class Roboteq : public rclcpp::Node
   rclcpp::TimerBase::SharedPtr odom_timer_;
   rclcpp::CallbackGroup::SharedPtr command_callback_group_;
   rclcpp::CallbackGroup::SharedPtr feedback_callback_group_;
-  std::mutex serial_mutex_;
+  std::unique_ptr<roboteq_ros2_driver::SerialIoWorker> serial_worker_;
 
   // buffer for reading encoder counts
   unsigned int odom_idx{};
@@ -114,6 +114,13 @@ class Roboteq : public rclcpp::Node
   int max_rpm{};
   std::string channel_1{};
   std::string channel_2{};
+  int serial_read_timeout_ms_{50};
+  int serial_write_timeout_ms_{50};
+  int serial_transaction_timeout_ms_{100};
+  int serial_max_response_bytes_{256};
+  double serial_reconnect_interval_s_{1.0};
+  int encoder_poll_period_ms_{50};
+  bool require_fresh_command_after_reconnect_{true};
   roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig odom_covariance_config_{};
   // Test different odom msg memory
   //nav_msgs::msg::Odometry odom_msg{};
@@ -129,27 +136,21 @@ class Roboteq : public rclcpp::Node
   void cmdvel_setup();
   void cmdvel_loop();
   void cmdvel_run();
-  void send_stop_command(const char * reason);
-  bool validate_controller_configuration();
-  std::optional<int> read_controller_config_int(const std::string & setting_name, int channel);
- 
-  std::vector<int> readEncoderCountRelative();
 
   //
   // odom publisher
   //
   void odom_setup();
-  void odom_stream(); 
   void odom_loop();
   //void odom_hs_run();
   void odom_ms_run();
   void odom_ls_run();
   void odom_publish(int left_ticks, int right_ticks, double dt);
   void publish_ticks(int left_ticks,int right_ticks);
-  void connect();
 
   void update_parameters();
   void command_watchdog_loop();
+  void start_serial_worker();
 
   //subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdvel_sub;

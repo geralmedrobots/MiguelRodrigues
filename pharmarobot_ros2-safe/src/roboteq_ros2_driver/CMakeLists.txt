@@ -102,6 +102,38 @@ target_include_directories(roboteq_command_scaling PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_serial_transport
+  src/roboteq_serial_transport.cpp
+)
+
+target_include_directories(roboteq_serial_transport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(roboteq_serial_transport
+  serial
+)
+
+add_library(roboteq_serial_worker
+  src/roboteq_serial_worker.cpp
+)
+
+target_include_directories(roboteq_serial_worker PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(roboteq_serial_worker
+  roboteq_command_scaling
+  roboteq_protocol
+  roboteq_serial_transport
+)
+
+ament_target_dependencies(roboteq_serial_worker
+  serial
+)
+
 add_library(differential_drive_kinematics
   src/differential_drive_kinematics/differential_drive_kinematics.cpp
 )
@@ -130,6 +162,8 @@ target_link_libraries(${PROJECT_NAME}_node
   roboteq_odom_tf
   roboteq_odom_twist
   roboteq_protocol
+  roboteq_serial_transport
+  roboteq_serial_worker
 )
 
 ament_target_dependencies(${PROJECT_NAME}_node
@@ -182,6 +216,8 @@ install(TARGETS
   roboteq_odom_covariance
   roboteq_odom_tf
   roboteq_odom_twist
+  roboteq_serial_transport
+  roboteq_serial_worker
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -252,6 +288,18 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_command_scaling
     roboteq_command_scaling
+  )
+
+  ament_add_gtest(test_serial_worker
+    test/test_serial_worker.cpp
+  )
+
+  target_link_libraries(test_serial_worker
+    roboteq_serial_worker
+  )
+
+  ament_target_dependencies(test_serial_worker
+    serial
   )
 
   ament_lint_auto_find_test_dependencies()

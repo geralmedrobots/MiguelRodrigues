@@ -1,0 +1,124 @@
+#ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_WORKER_HPP_
+#define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_WORKER_HPP_
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
+
+namespace roboteq_ros2_driver
+{
+
+struct RequiredControllerSetting
+{
+  std::string name;
+  int channel{0};
+  int expected_value{0};
+};
+
+struct DesiredMotorCommand
+{
+  double channel_1_mps{0.0};
+  double channel_2_mps{0.0};
+  std::chrono::steady_clock::time_point received_time{};
+  uint64_t sequence{0};
+  bool valid{false};
+};
+
+struct EncoderSample
+{
+  int32_t channel_1{0};
+  int32_t channel_2{0};
+  std::chrono::steady_clock::time_point timestamp{};
+  uint64_t sequence{0};
+  bool valid{false};
+};
+
+struct SerialWorkerConfig
+{
+  bool open_loop{false};
+  double wheel_circumference{1.0};
+  int max_rpm{100};
+  std::chrono::milliseconds command_timeout{500};
+  std::chrono::milliseconds encoder_poll_period{50};
+  std::chrono::milliseconds reconnect_interval{1000};
+  bool require_fresh_command_after_reconnect{true};
+  std::vector<RequiredControllerSetting> required_settings;
+  std::function<void(const std::string &)> log_callback;
+};
+
+class SerialIoWorker
+{
+public:
+  SerialIoWorker(
+    std::unique_ptr<IRoboteqSerialTransport> transport,
+    SerialWorkerConfig config);
+  ~SerialIoWorker();
+
+  SerialIoWorker(const SerialIoWorker &) = delete;
+  SerialIoWorker & operator=(const SerialIoWorker &) = delete;
+
+  void start();
+  void stop();
+  void submitCommand(double channel_1_mps, double channel_2_mps);
+  void invalidateCommands();
+  std::optional<EncoderSample> takeLatestEncoderSample();
+  uint64_t commandSequence() const;
+  bool isReady() const;
+
+private:
+  enum class ConnectionState
+  {
+    disconnected,
+    connecting,
+    configuring,
+    waiting_for_fresh_command,
+    ready,
+    unhealthy,
+    reconnecting,
+  };
+
+  void run();
+  bool connectAndValidate(std::string & error);
+  bool sendStop(const char * reason, std::string & error);
+  bool sendDesiredCommand(const DesiredMotorCommand & command, std::string & error);
+  bool validateControllerConfiguration(std::string & error);
+  bool validateCommunication(std::string & error);
+  bool pollEncoder(std::string & error);
+  void markFailure(const std::string & error);
+  std::vector<std::string> buildMotorCommands(double channel_1_mps, double channel_2_mps) const;
+  std::chrono::steady_clock::time_point nextWakeTime(
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::time_point next_encoder_poll,
+    std::chrono::steady_clock::time_point next_reconnect) const;
+
+  std::unique_ptr<IRoboteqSerialTransport> transport_;
+  SerialWorkerConfig config_;
+
+  mutable std::mutex state_mutex_;
+  std::condition_variable state_cv_;
+  DesiredMotorCommand desired_command_;
+  uint64_t latest_submitted_sequence_{0};
+  uint64_t applied_sequence_{0};
+  uint64_t minimum_motion_sequence_{0};
+  bool applied_stopped_{true};
+  bool stop_requested_{false};
+  bool worker_started_{false};
+  std::optional<EncoderSample> latest_encoder_sample_;
+  uint64_t encoder_sequence_{0};
+  ConnectionState state_{ConnectionState::disconnected};
+  std::thread worker_thread_;
+};
+
+}  // namespace roboteq_ros2_driver
+
+#endif  // ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_WORKER_HPP_

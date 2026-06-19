@@ -63,17 +63,30 @@ TEST(RoboteqProtocol, AcceptsLineTerminatedResponses)
 TEST(RoboteqProtocol, RejectsMalformedResponses)
 {
   EXPECT_FALSE(protocol::parse_firmware_id("").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("+").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("-").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("?FID").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id(" FID=firmware").has_value());
   EXPECT_FALSE(protocol::parse_firmware_id("FID=").has_value());
   EXPECT_FALSE(protocol::parse_firmware_id("ID=firmware").has_value());
   EXPECT_FALSE(protocol::parse_voltage_fields("V=").has_value());
+  EXPECT_FALSE(protocol::parse_voltage_fields(" V=1:2:3").has_value());
+  EXPECT_FALSE(protocol::parse_voltage_fields("V=1:2:3 ").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=123").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=:456").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("C=123:456").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:456:789").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts(" CR=123:456").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:456 ").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("?CR").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("-").has_value());
   EXPECT_FALSE(protocol::parse_config_readback("", "MMOD").has_value());
   EXPECT_FALSE(protocol::parse_config_readback("MMOD=", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback(" MMOD=1", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1 ", "MMOD").has_value());
   EXPECT_FALSE(protocol::parse_config_readback("MMOD=1", "").has_value());
   EXPECT_FALSE(protocol::parse_config_readback("MXRPM=100", "MMOD").has_value());
   EXPECT_FALSE(protocol::parse_config_readback("~MMOD 1", "MMOD").has_value());

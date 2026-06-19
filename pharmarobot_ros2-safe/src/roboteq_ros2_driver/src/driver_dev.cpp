@@ -5,6 +5,7 @@
 #include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/odom_twist.hpp"
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
+#include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 
 #include <algorithm>
@@ -23,7 +24,6 @@
 #include <iostream>
 
 // dependencies for ROS
-#include <serial/serial.h>
 #include <signal.h>
 #include <string>
 #include <sstream>
@@ -51,21 +51,11 @@
 
 
 
-serial::Serial controller;
-
 namespace
 {
 constexpr double kCommandAngularSign = -1.0;
-constexpr int kSerialReadDelayMs = 20;
 
-struct RequiredConfigSetting
-{
-    const char * name;
-    int channel;
-    int expected_value;
-};
-
-std::vector<RequiredConfigSetting> required_controller_settings(
+std::vector<roboteq_ros2_driver::RequiredControllerSetting> required_controller_settings(
     bool open_loop, int encoder_ppr, double max_amps, int max_rpm)
 {
     const int motor_mode = open_loop ? 0 : 1;
@@ -93,6 +83,32 @@ std::vector<RequiredConfigSetting> required_controller_settings(
         {"EPPR", 1, encoder_ppr},
         {"EPPR", 2, encoder_ppr},
     };
+}
+
+int sanitize_positive_int_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    int value,
+    int fallback)
+{
+    if (value > 0) {
+        return value;
+    }
+    RCLCPP_WARN(logger, "Invalid parameter '%s'=%d; using default %d", name, value, fallback);
+    return fallback;
+}
+
+double sanitize_positive_double_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    double value,
+    double fallback)
+{
+    if (std::isfinite(value) && value > 0.0) {
+        return value;
+    }
+    RCLCPP_WARN(logger, "Invalid parameter '%s'=%.6f; using default %.6f", name, value, fallback);
+    return fallback;
 }
 
 double sanitize_covariance_parameter(
@@ -197,6 +213,14 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
         this->declare_parameter("odom_twist_covariance_angular_y", default_covariance.twist_angular_y);
     odom_covariance_config_.twist_angular_z =
         this->declare_parameter("odom_twist_covariance_angular_z", default_covariance.twist_angular_z);
+    serial_read_timeout_ms_ = this->declare_parameter("serial_read_timeout_ms", 50);
+    serial_write_timeout_ms_ = this->declare_parameter("serial_write_timeout_ms", 50);
+    serial_transaction_timeout_ms_ = this->declare_parameter("serial_transaction_timeout_ms", 100);
+    serial_max_response_bytes_ = this->declare_parameter("serial_max_response_bytes", 256);
+    serial_reconnect_interval_s_ = this->declare_parameter("serial_reconnect_interval_s", 1.0);
+    encoder_poll_period_ms_ = this->declare_parameter("encoder_poll_period_ms", 50);
+    require_fresh_command_after_reconnect_ =
+        this->declare_parameter("require_fresh_command_after_reconnect", true);
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     differential_drive_kinematics_.initParam(wheel_radius, wheelbase, encoder_cpr);
@@ -224,35 +248,7 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 
     odom_msg = nav_msgs::msg::Odometry();
 
-    serial::Timeout timeout = serial::Timeout::simpleTimeout(1000);
-    {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        controller.setPort(port);
-        controller.setBaudrate(baud);
-        controller.setTimeout(timeout);
-    }
-    // connect to serial port
-    
     update_parameters();
-    // set up parameters for dynamic reconfigure
-    connect();
-    // configure motor controller
-    try {
-        cmdvel_setup();
-    } catch (const std::exception & ex) {
-        RCLCPP_FATAL(
-            this->get_logger(),
-            "Roboteq startup validation failed; normal runtime startup aborted: %s",
-            ex.what());
-        send_stop_command("startup validation failed");
-        {
-            std::lock_guard<std::mutex> lock(serial_mutex_);
-            if (controller.isOpen()) {
-                controller.close();
-            }
-        }
-        throw;
-    }
     odom_setup();
 //
 //  odom publisher
@@ -283,6 +279,7 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
         ROBOTEQ_CYCLE_PERIOD,
         std::bind(&Roboteq::odom_loop, this),
         feedback_callback_group_);
+    start_serial_worker();
     // enable modifying params at run-time
     /*    
     using namespace std::chrono_literals;
@@ -327,47 +324,38 @@ void Roboteq::update_parameters()
     this->get_parameter("odom_twist_covariance_angular_x", odom_covariance_config_.twist_angular_x);
     this->get_parameter("odom_twist_covariance_angular_y", odom_covariance_config_.twist_angular_y);
     this->get_parameter("odom_twist_covariance_angular_z", odom_covariance_config_.twist_angular_z);
+    this->get_parameter("serial_read_timeout_ms", serial_read_timeout_ms_);
+    this->get_parameter("serial_write_timeout_ms", serial_write_timeout_ms_);
+    this->get_parameter("serial_transaction_timeout_ms", serial_transaction_timeout_ms_);
+    this->get_parameter("serial_max_response_bytes", serial_max_response_bytes_);
+    this->get_parameter("serial_reconnect_interval_s", serial_reconnect_interval_s_);
+    this->get_parameter("encoder_poll_period_ms", encoder_poll_period_ms_);
+    this->get_parameter("require_fresh_command_after_reconnect", require_fresh_command_after_reconnect_);
 
-    
-
-    
+    serial_read_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_read_timeout_ms", serial_read_timeout_ms_, 50);
+    serial_write_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_write_timeout_ms", serial_write_timeout_ms_, 50);
+    serial_transaction_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_transaction_timeout_ms", serial_transaction_timeout_ms_, 100);
+    serial_max_response_bytes_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_max_response_bytes", serial_max_response_bytes_, 256);
+    serial_reconnect_interval_s_ = sanitize_positive_double_parameter(
+        this->get_logger(), "serial_reconnect_interval_s", serial_reconnect_interval_s_, 1.0);
+    encoder_poll_period_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "encoder_poll_period_ms", encoder_poll_period_ms_, 50);
 }
-
-void Roboteq::connect(){
-    RCLCPP_INFO_STREAM(this->get_logger(),"Opening serial port on " << port << " at " << baud << "..." );
-    try
-    {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        controller.open();
-        if (controller.isOpen())
-        {
-            RCLCPP_INFO(this->get_logger(), "Successfully opened serial port");
-            return; 
-            
-        }
-    }
-    catch (serial::IOException &e)
-    {
-        RCLCPP_WARN_STREAM(this->get_logger(), "serial::IOException: ");
-        throw;
-    }
-    RCLCPP_WARN(this->get_logger(),"Failed to open serial port");
-    sleep(5);
-
-}
-
 
 void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_msg)
 {
-    if (!controller_config_valid_) {
-        RCLCPP_ERROR(this->get_logger(), "Rejected cmd_vel because Roboteq configuration is not validated");
-        send_stop_command("controller configuration not validated");
+    if (!serial_worker_) {
+        RCLCPP_ERROR(this->get_logger(), "Rejected cmd_vel because serial worker is not running");
         return;
     }
 
     if (!std::isfinite(twist_msg->linear.x) || !std::isfinite(twist_msg->angular.z)) {
         RCLCPP_ERROR(this->get_logger(), "Rejected non-finite cmd_vel command");
-        send_stop_command("non-finite cmd_vel");
+        serial_worker_->submitCommand(0.0, 0.0);
         return;
     }
 
@@ -397,9 +385,6 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
 
     //RCLCPP_INFO(this->get_logger(), "Received linear = %0.2f, angular = %0.2f", twist_msg->linear.x, twist_msg->angular.z);
 
-    std::stringstream channel_1_cmd;
-    std::stringstream channel_2_cmd;
-    
     float channel_1_speed;
     float channel_2_speed;
 
@@ -435,214 +420,7 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
         channel_2_speed
     );
 
-    if (open_loop)
-    {
-        // motor power (scale 0-1000)
-        RCLCPP_INFO_STREAM(this->get_logger(),"open loop");
-        const auto powers = roboteq_ros2_driver::command_scaling::scale_pair_to_limit(
-            channel_1_speed / wheel_circumference * 60.0 / max_rpm * 1000.0,
-            channel_2_speed / wheel_circumference * 60.0 / max_rpm * 1000.0,
-            1000.0);
-        const int32_t channel_1_power = static_cast<int32_t>(powers.first);
-        const int32_t channel_2_power = static_cast<int32_t>(powers.second);
-
-        
-        channel_1_cmd << "!G 1 " << channel_1_power << "\r";
-        channel_2_cmd << "!G 2 " << channel_2_power << "\r";
-    }
-    else
-    {
-        // motor speed (rpm)
-        const auto rpms = roboteq_ros2_driver::command_scaling::scale_pair_to_limit(
-            channel_1_speed / wheel_circumference * 60.0,
-            channel_2_speed / wheel_circumference * 60.0,
-            max_rpm);
-        const int32_t channel_1_rpm = static_cast<int32_t>(rpms.first);
-        const int32_t channel_2_rpm = static_cast<int32_t>(rpms.second);
-        
-        channel_1_cmd << "!S 1 " << channel_1_rpm << "\r";
-        channel_2_cmd << "!S 2 " << channel_2_rpm << "\r";
-
-    }
-
-    #ifdef _VERBOSE
-    printf("channel_1_cmd: %s\n", channel_1_cmd.str().c_str());
-    printf("channel_2_cmd: %s\n\n", channel_2_cmd.str().c_str());
-    #endif
-    
-    // send command to motor controller
-
-
-    //write cmd to motor controller
-    //#ifndef _CMDVEL_FORCE_RUN
-    const std::string cmd_1 = channel_1_cmd.str();
-    const std::string cmd_2 = channel_2_cmd.str();
-
-    size_t bytes_1 = 0;
-    size_t bytes_2 = 0;
-    {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        bytes_1 = controller.write(cmd_1);
-        bytes_2 = controller.write(cmd_2);
-        controller.flush();
-    }
-
-    std::string cmd_1_print = cmd_1;
-    std::string cmd_2_print = cmd_2;
-
-    if (!cmd_1_print.empty() && cmd_1_print.back() == '\r') {
-        cmd_1_print.pop_back();
-    }
-
-    if (!cmd_2_print.empty() && cmd_2_print.back() == '\r') {
-        cmd_2_print.pop_back();
-    }
-
-    RCLCPP_DEBUG(
-        this->get_logger(),
-        "ROBOTEQ_SERIAL_TX | cmd1='%s' bytes1=%zu | cmd2='%s' bytes2=%zu",
-        cmd_1_print.c_str(),
-        bytes_1,
-        cmd_2_print.c_str(),
-        bytes_2
-    );
-    //#endif
-}
-
-void Roboteq::send_stop_command(const char * reason)
-{
-    std::lock_guard<std::mutex> lock(serial_mutex_);
-    if (!controller.isOpen()) {
-        return;
-    }
-
-    try {
-        controller.write("!G 1 0\r");
-        controller.write("!G 2 0\r");
-        controller.write("!S 1 0\r");
-        controller.write("!S 2 0\r");
-        controller.flush();
-        RCLCPP_WARN(this->get_logger(), "Motor stop command sent: %s", reason);
-    } catch (const std::exception & ex) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to send motor stop command: %s", ex.what());
-    }
-}
-
-void Roboteq::cmdvel_setup()
-{
-    RCLCPP_INFO(this->get_logger(), "validating motor controller configuration...");
-    controller_config_valid_ = false;
-
-    // stop motors
-    {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        controller.write("!G 1 0\r");
-        controller.write("!G 2 0\r");
-        controller.write("!S 1 0\r");
-        controller.write("!S 2 0\r");
-        controller.flush();
-    }
-
-    if (!validate_controller_configuration()) {
-        throw std::runtime_error("required Roboteq controller configuration does not match");
-    }
-    controller_config_valid_ = true;
-    RCLCPP_INFO(this->get_logger(), "Roboteq controller configuration validated");
-}
-
-std::optional<int> Roboteq::read_controller_config_int(
-    const std::string & setting_name, int channel)
-{
-    std::lock_guard<std::mutex> lock(serial_mutex_);
-    if (!controller.isOpen()) {
-        RCLCPP_ERROR(
-            this->get_logger(),
-            "Cannot validate Roboteq setting %s: serial port is not open",
-            setting_name.c_str());
-        return std::nullopt;
-    }
-
-    std::stringstream query;
-    query << "~" << setting_name;
-    if (channel > 0) {
-        query << " " << channel;
-    }
-    query << "\r";
-
-    controller.flushInput();
-    controller.write(query.str());
-    controller.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSerialReadDelayMs));
-
-    std::string line;
-    while (controller.available())
-    {
-        char ch = 0;
-        if (controller.read((uint8_t *)&ch, 1) == 0) {
-            break;
-        }
-
-        if (ch == '\r' || ch == '\n') {
-            if (!line.empty()) {
-                const auto parsed = roboteq_ros2_driver::protocol::parse_config_readback(
-                    line, setting_name);
-                if (parsed.has_value()) {
-                    return parsed;
-                }
-                line.clear();
-            }
-            continue;
-        }
-        line += ch;
-    }
-
-    if (!line.empty()) {
-        const auto parsed = roboteq_ros2_driver::protocol::parse_config_readback(
-            line, setting_name);
-        if (parsed.has_value()) {
-            return parsed;
-        }
-    }
-
-    const std::string channel_label = channel > 0 ? " channel " + std::to_string(channel) : "";
-    RCLCPP_ERROR(
-        this->get_logger(),
-        "Roboteq setting %s%s readback was missing or malformed",
-        setting_name.c_str(),
-        channel_label.c_str());
-    return std::nullopt;
-}
-
-bool Roboteq::validate_controller_configuration()
-{
-    bool valid = true;
-    for (const auto & setting : required_controller_settings(
-        open_loop, encoder_ppr, max_amps, max_rpm))
-    {
-        const auto actual = read_controller_config_int(setting.name, setting.channel);
-        if (!actual.has_value()) {
-            valid = false;
-            continue;
-        }
-
-        if (*actual != setting.expected_value) {
-            const std::string channel_label =
-                setting.channel > 0 ? " channel " + std::to_string(setting.channel) : "";
-            RCLCPP_ERROR(
-                this->get_logger(),
-                "Roboteq configuration mismatch: %s%s expected %d but read %d",
-                setting.name,
-                channel_label.c_str(),
-                setting.expected_value,
-                *actual);
-            valid = false;
-        }
-    }
-
-    if (!valid) {
-        send_stop_command("controller configuration validation failed");
-    }
-    return valid;
+    serial_worker_->submitCommand(channel_1_speed, channel_2_speed);
 }
 
 void Roboteq::cmdvel_loop()
@@ -680,8 +458,7 @@ void Roboteq::odom_setup()
 
     // start encoder streaming
     RCLCPP_INFO_STREAM(this->get_logger(),"covariance set");
-    RCLCPP_INFO_STREAM(this->get_logger(),"odometry stream starting...");
-    odom_stream();
+    RCLCPP_INFO_STREAM(this->get_logger(),"odometry polling will be handled by serial worker");
     
     odom_last_time = millis();
 #ifdef _ODOM_SENSORS
@@ -692,70 +469,17 @@ void Roboteq::odom_setup()
 // Odom msg streams
 
 
-void Roboteq::odom_stream()
-{
-    std::lock_guard<std::mutex> lock(serial_mutex_);
-
-#ifdef _ODOM_SENSORS
-    // start encoder and current output (30 hz)
-    // doubling frequency since one value is output at each cycle
-    //  controller.write("# C_?CR_?BA_# 17\r");
-    // start encoder, current and voltage output (30 hz)
-    // tripling frequency since one value is output at each cycle
-    controller.write("# C_?CR_?BA_?V_# 11\r");
-#else
-    //  start encoder output (10 hz)
-    //  controller.write("# C_?CR_# 100\r");
-    // start encoder output (30 hz)
-    //controller.write("# C_?CR_# 33\r");
-    RCLCPP_INFO(this->get_logger(), "Encoder polling mode enabled");
-
-#endif
-    controller.flush();
-}
-
-std::vector<int> Roboteq::readEncoderCountRelative()
-{
-    std::lock_guard<std::mutex> lock(serial_mutex_);
-    // Send encoder query to the controller
-    controller.flushInput();
-    controller.write("?CR\r");
-    controller.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSerialReadDelayMs));
-    std::vector<int> output;
-    std::string result;
-
-
-
-
-    char ch = 0;
-    std::string buffer;
-    while (controller.available())
-    {
-        if (controller.read((uint8_t *)&ch, 1) == 0)
-            break;
-        if (ch == '\r')
-            break;
-        buffer += ch;
-    }
-    result = buffer;
-
-    const auto encoder_counts = roboteq_ros2_driver::protocol::parse_encoder_counts(result);
-    if (encoder_counts.has_value()) {
-        output.push_back(encoder_counts->first);
-        output.push_back(encoder_counts->second);
-    } else {
-        output.push_back(INT_MAX);
-        output.push_back(INT_MAX);
-    }
-    return output;
-}
-
 void Roboteq::odom_loop()
 {
-    std::vector<int> encoders = readEncoderCountRelative();
-    
-    
+    if (!serial_worker_) {
+        return;
+    }
+
+    const auto sample = serial_worker_->takeLatestEncoderSample();
+    if (!sample.has_value() || !sample->valid) {
+        return;
+    }
+
     
     //uint32_t nowtime = millis();
     
@@ -771,13 +495,11 @@ void Roboteq::odom_loop()
     // Use encoders for odometry update, e.g.:
     // ch1_odom_encoder = encoders[0];
     // if we haven't received encoder counts in some time then restart streaming
-    ch1_odom_encoder =  encoders[0];
-    ch2_odom_encoder =  encoders[1];
+    ch1_odom_encoder =  sample->channel_1;
+    ch2_odom_encoder =  sample->channel_2;
 
     if (ch1_odom_encoder == INT_MAX || ch2_odom_encoder == INT_MAX)
     {
-        //RCLCPP_WARN(this->get_logger(), "No encoder data received, restarting odometry stream");
-        //odom_stream();
         return; // early return if no encoders read
     }
 
@@ -893,22 +615,50 @@ void Roboteq::command_watchdog_loop()
     if (roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
         received_first_cmd_, command_timeout_logged_, command_age_s, cmd_timeout_s_))
     {
-        send_stop_command("cmd_vel timeout");
         command_timeout_logged_ = true;
+        RCLCPP_WARN(this->get_logger(), "cmd_vel timeout; serial worker will enforce stop");
     }
 }
 
 Roboteq::~Roboteq()
 {
-    send_stop_command("driver shutdown");
-    {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        if (controller.isOpen()) {
-            controller.close();
-        }
+    if (serial_worker_) {
+        serial_worker_->stop();
     }
     // rclcpp::shutdown(); // uncomment if node doesnt destroy properly
 
+}
+
+void Roboteq::start_serial_worker()
+{
+    roboteq_ros2_driver::SerialTransportConfig transport_config;
+    transport_config.port = port;
+    transport_config.baud = baud;
+    transport_config.read_timeout = std::chrono::milliseconds(serial_read_timeout_ms_);
+    transport_config.write_timeout = std::chrono::milliseconds(serial_write_timeout_ms_);
+    transport_config.transaction_timeout = std::chrono::milliseconds(serial_transaction_timeout_ms_);
+    transport_config.max_response_bytes = static_cast<std::size_t>(serial_max_response_bytes_);
+
+    roboteq_ros2_driver::SerialWorkerConfig worker_config;
+    worker_config.open_loop = open_loop;
+    worker_config.wheel_circumference = wheel_circumference;
+    worker_config.max_rpm = max_rpm;
+    worker_config.command_timeout = std::chrono::milliseconds(
+        static_cast<int>(std::max(0.001, cmd_timeout_s_) * 1000.0));
+    worker_config.encoder_poll_period = std::chrono::milliseconds(encoder_poll_period_ms_);
+    worker_config.reconnect_interval = std::chrono::milliseconds(
+        static_cast<int>(serial_reconnect_interval_s_ * 1000.0));
+    worker_config.require_fresh_command_after_reconnect = require_fresh_command_after_reconnect_;
+    worker_config.required_settings =
+        required_controller_settings(open_loop, encoder_ppr, max_amps, max_rpm);
+    worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
+        RCLCPP_WARN(logger, "%s", message.c_str());
+    };
+
+    serial_worker_ = std::make_unique<roboteq_ros2_driver::SerialIoWorker>(
+        std::make_unique<roboteq_ros2_driver::RoboteqSerialTransport>(transport_config),
+        worker_config);
+    serial_worker_->start();
 }
 
 } // end of namespace

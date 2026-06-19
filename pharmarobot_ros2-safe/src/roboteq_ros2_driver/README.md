@@ -39,9 +39,11 @@ covered by `test_roboteq_protocol`.
 
 Malformed encoder responses are rejected instead of being partially accepted.
 For example, partial numeric fields such as `CR=12x:34` or `CR=12:34y`,
-empty fields, unexpected prefixes, and out-of-range integers are invalid.
-Invalid encoder responses follow the existing safe invalid-sentinel path in
-`readEncoderCountRelative()` and return `INT_MAX` for both channels.
+empty fields, unexpected prefixes, out-of-range integers, extra separators,
+explicit rejection replies, and leading/trailing whitespace around numeric
+responses are invalid. Invalid encoder responses are not published as valid
+zero motion; the serial worker marks the transaction failed and the odometry
+publishing path waits for the next validated encoder sample.
 
 This parser robustness change is limited to rejecting malformed encoder input.
 It does not intentionally change motor-command generation, serial write
@@ -108,28 +110,79 @@ is still required to confirm `/odom` twist values match observed motion.
 
 ## Serial I/O separation
 
-Motor command handling and encoder polling use separate ROS callback paths. The
-`/cmd_vel/safe` subscription and command-timeout watchdog run in the command
-callback group, while encoder polling and odometry publication run in the
-feedback callback group. The node uses a `MultiThreadedExecutor` so a slow
-encoder query, malformed encoder reply, or encoder read timeout does not
-monopolize the only executor thread.
+The driver now separates ROS callback work from Roboteq serial I/O with a
+single dedicated serial worker thread. The old runtime model used direct serial
+writes in `/cmd_vel/safe`, direct stop writes from the watchdog/destructor, and
+encoder polling from the odometry timer. Those paths shared one mutex, but slow
+serial reads, malformed replies, or read timeouts could still delay command
+handling.
 
-All access to the shared Roboteq serial port is synchronized with one mutex.
-This covers motor command writes, conservative stop writes, controller
-configuration readback, encoder stream setup, encoder polling, startup serial
-configuration/open, and shutdown close. The single serial device still permits
-only one transaction at a time, so a command write may wait briefly for an
-in-progress encoder transaction to release the mutex, but encoder polling no
-longer blocks command callback scheduling.
+The new runtime model is:
 
-Encoder read failures keep the existing behavior: malformed or missing encoder
-responses are rejected by the parser and that odometry cycle is skipped.
-Command conversion, command scaling, saturation, odometry math, covariance,
-dynamic TF, frame IDs, encoder signs, motor direction, wheel radius, and wheel
-separation are unchanged. Manual validation on the robot is still required to
-confirm command latency and odometry feedback timing under real serial
-conditions.
+    ROS callbacks
+        -> thread-safe latest desired motor command
+        -> single serial I/O worker
+        -> fakeable Roboteq serial transport
+        -> strict protocol parser
+        -> thread-safe latest encoder sample
+        -> ROS wheel-tick and odometry publishing
+
+Ownership rules:
+
+    ROS callback thread:
+      - validates `/cmd_vel/safe`
+      - preserves the existing differential-drive and channel mapping logic
+      - updates latest desired command state only
+
+    Serial worker:
+      - exclusively owns the Roboteq serial transport and `serial::Serial`
+      - opens and closes the connection
+      - sends startup, timeout, reconnect, command, and shutdown stops
+      - validates required controller configuration by readback
+      - validates communication with a real query response
+      - sends latest motor commands
+      - polls encoders
+      - handles serial failure and reconnect timing
+
+    ROS publishing path:
+      - reads the latest validated encoder sample
+      - publishes `/wheel_ticks` and `/odom`
+      - does not access serial
+
+Commands use latest-command-wins semantics instead of an unbounded queue. The
+worker sends a motor command when a fresh sequence is available, sends one stop
+on command timeout, and avoids resending stale commands unnecessarily. After a
+serial failure or reconnect, commands received before or during the disconnect
+are invalidated; non-zero motion requires a fresh post-reconnect
+`/cmd_vel/safe` message.
+
+The serial transport performs bounded complete command writes. Roboteq commands
+such as `!G`, `!S`, and configuration commands are not required to return a
+`+` acknowledgment because the tested firmware may not provide one. Queries
+such as `?FID`, `?CR`, and configuration readback require bounded validated
+responses. Query handling skips command echoes, stale unrelated lines, and `+`
+lines until the expected response is received; explicit `-`, malformed,
+truncated, oversized, or timed-out responses fail the transaction.
+
+New serial parameters:
+
+    serial_read_timeout_ms: 50
+    serial_write_timeout_ms: 50
+    serial_transaction_timeout_ms: 100
+    serial_max_response_bytes: 256
+    serial_reconnect_interval_s: 1.0
+    encoder_poll_period_ms: 50
+    require_fresh_command_after_reconnect: true
+
+Invalid non-positive timeout, size, and interval parameters are replaced with
+conservative defaults at startup.
+
+This change intentionally preserves command conversion, command scaling,
+saturation, odometry math, covariance, dynamic TF, frame IDs, encoder signs,
+motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and the
+existing channel mapping. Manual validation on the robot is still required to
+confirm command latency, reconnect behavior, and odometry feedback timing under
+real serial conditions.
 
 ## Odometry covariance
 
@@ -191,13 +244,13 @@ wheel radius, wheel separation, command timeout handling, serial port names, or
 emergency stop behavior. Manual validation on the robot is still required before
 using new operating envelopes with real motors.
 
-## Parser, serial, TF, twist, covariance and command scaling validation
+## Parser, serial worker, TF, twist, covariance and command scaling validation
 
 After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser, command watchdog, odometry TF, odometry twist,
-odometry covariance, and command scaling tests with:
+Roboteq protocol parser, serial worker, command watchdog, odometry TF, odometry
+twist, odometry covariance, and command scaling tests with:
 
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_serial_worker|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
 
 Inspect results with:
 
@@ -206,12 +259,41 @@ Inspect results with:
 The validated commands for this change were:
 
     source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
+    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_roboteq_protocol|test_serial_worker"
     source /opt/ros/foxy/setup.bash && colcon test-result --verbose
 
 The validated test result for the current driver change set was:
 
-    Summary: 44 tests, 0 errors, 0 failures, 0 skipped
+    Summary: 47 tests, 0 errors, 0 failures, 0 skipped
+
+The serial worker tests use a fake transport. They verify worker-only transport
+access, non-blocking command submission during slow serial writes, encoder
+sample handoff, latest-command-wins behavior, malformed encoder response
+rejection, one timeout stop path, reconnect command invalidation, and fresh
+post-reconnect command application.
+
+## Lifted-wheel hardware validation
+
+Automated tests do not access `/dev/roboteq` or move motors. Before driving the
+AMR after this refactor, validate on real hardware with wheels lifted and the
+area clear:
+
+1. Confirm the physical emergency stop and STO path are available.
+2. Start the normal safety stack using the approved robot procedure.
+3. Verify the Roboteq node connects, sends a startup stop, validates
+   controller configuration, and reports serial worker readiness.
+4. With the deadman held, send a small forward command through the normal
+   `/cmd_vel/safe` chain and confirm both wheels rotate in the expected
+   direction.
+5. Release the deadman or stop commands and confirm a timeout stop occurs once
+   and motion does not resume without a fresh command.
+6. Observe `/wheel_ticks`, `/odom`, and dynamic `odom -> base_link` TF for
+   plausible updates while wheels turn.
+7. Power-cycle or disconnect/reconnect the Roboteq serial device only under a
+   safe lifted-wheel procedure. Confirm the driver reconnects stopped and does
+   not replay stale pre-disconnect motion.
+8. Send a fresh post-reconnect command through the normal safety chain and
+   confirm motion resumes only after that fresh command.
 
 ## ROS Foxy build note
 
