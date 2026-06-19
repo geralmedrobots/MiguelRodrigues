@@ -1,10 +1,9 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/command_watchdog.hpp"
-#include "roboteq_ros2_driver/command_scaling.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
-#include "roboteq_ros2_driver/odom_twist.hpp"
-#include "roboteq_ros2_driver/roboteq_protocol.hpp"
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
+#include "roboteq_ros2_driver/roboteq_configuration.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 
@@ -53,38 +52,6 @@
 
 namespace
 {
-constexpr double kCommandAngularSign = -1.0;
-
-std::vector<roboteq_ros2_driver::RequiredControllerSetting> required_controller_settings(
-    bool open_loop, int encoder_ppr, double max_amps, int max_rpm)
-{
-    const int motor_mode = open_loop ? 0 : 1;
-    const int amp_limit = static_cast<int>(max_amps * 10);
-
-    return {
-        {"ECHOF", 0, 1},
-        {"RWD", 0, 1000},
-        {"MMOD", 1, motor_mode},
-        {"MMOD", 2, motor_mode},
-        {"ALIM", 1, amp_limit},
-        {"ALIM", 2, amp_limit},
-        {"MXRPM", 1, max_rpm},
-        {"MXRPM", 2, max_rpm},
-        {"MAC", 1, 20000},
-        {"MAC", 2, 20000},
-        {"MDEC", 1, 20000},
-        {"MDEC", 2, 20000},
-        {"KP", 1, 1},
-        {"KP", 2, 1},
-        {"KI", 1, 7},
-        {"KI", 2, 7},
-        {"KD", 1, 0},
-        {"KD", 2, 0},
-        {"EPPR", 1, encoder_ppr},
-        {"EPPR", 2, encoder_ppr},
-    };
-}
-
 int sanitize_positive_int_parameter(
     const rclcpp::Logger & logger,
     const char * name,
@@ -223,24 +190,12 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
         this->declare_parameter("require_fresh_command_after_reconnect", true);
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
-    differential_drive_kinematics_.initParam(wheel_radius, wheelbase, encoder_cpr);
+    odometry_integrator_.init(wheel_radius, wheelbase, encoder_cpr);
 
     
-    starttime = 0;
-    hstimer   = 0;
-    mstimer   = 0;
-    odom_idx  = 0;
-    odom_encoder_toss  = 5;
-    odom_encoder_left  = 0;
-    odom_encoder_right = 0;
-    ch1_odom_encoder   = 0;
-    ch2_odom_encoder   = 0;
     odom_x         = 0.0;
     odom_y         = 0.0;
     odom_yaw       = 0.0;
-    odom_last_x    = 0.0;
-    odom_last_y    = 0.0;
-    odom_last_yaw  = 0.0;
     odom_last_time = 0;
 
     wheel_circumference = 2*PI*wheel_radius;
@@ -363,70 +318,42 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     received_first_cmd_ = true;
     command_timeout_logged_ = false;
 
-    // wheel speed (m/s)
-    // ROS convention: positive angular.z = left turn.
-    // Hardware-specific correction: this robot's physical turn direction is inverted,
-    // so we invert only the angular component here.
-    const double linear_x = twist_msg->linear.x;
-    const double angular_z = kCommandAngularSign * twist_msg->angular.z;
-
-    const double left_speed = linear_x - (wheelbase * angular_z / 2.0);
-
-    const double right_speed = linear_x + (wheelbase * angular_z / 2.0);
+    const auto wheel_speeds = roboteq_ros2_driver::command_conversion::twist_to_wheel_speeds(
+        twist_msg->linear.x,
+        twist_msg->angular.z,
+        wheelbase);
 
     RCLCPP_DEBUG(
         this->get_logger(),
         "CMD_VEL_TO_WHEELS | linear_x=%.3f angular_z=%.3f | left_speed=%.3f right_speed=%.3f",
         twist_msg->linear.x,
         twist_msg->angular.z,
-        left_speed,
-        right_speed
+        wheel_speeds.left_mps,
+        wheel_speeds.right_mps
     );
 
-    //RCLCPP_INFO(this->get_logger(), "Received linear = %0.2f, angular = %0.2f", twist_msg->linear.x, twist_msg->angular.z);
-
-    float channel_1_speed;
-    float channel_2_speed;
-
-    /**************** CHANNEL SWAP ***********************************/
-
-    if(channel_1 == "right" && channel_2 == "left")
-    { // Default
-    
-        channel_1_speed = right_speed;
-        channel_2_speed = left_speed;
-    }
-    else if (channel_1 == "left" && channel_2 == "right")
-    {
-        channel_1_speed = left_speed;
-        channel_2_speed = right_speed;
-    }
-    else
-    {
+    const auto channel_speeds = roboteq_ros2_driver::command_conversion::wheels_to_channels(
+        wheel_speeds,
+        channel_1,
+        channel_2);
+    if (!channel_speeds.has_value()) {
         RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
         return;
     }
-    /**************** CHANNEL SWAP ***********************************/
-
 
     RCLCPP_DEBUG(
         this->get_logger(),
         "WHEELS_TO_CHANNELS | left_speed=%.3f right_speed=%.3f | channel_1=%s %.3f | channel_2=%s %.3f",
-        left_speed,
-        right_speed,
+        wheel_speeds.left_mps,
+        wheel_speeds.right_mps,
         channel_1.c_str(),
-        channel_1_speed,
+        channel_speeds->channel_1_mps,
         channel_2.c_str(),
-        channel_2_speed
+        channel_speeds->channel_2_mps
     );
 
-    serial_worker_->submitCommand(channel_1_speed, channel_2_speed);
+    serial_worker_->submitCommand(channel_speeds->channel_1_mps, channel_speeds->channel_2_mps);
 }
-
-void Roboteq::cmdvel_loop()
-{
-}
-
 
 void Roboteq::odom_setup()
 {
@@ -491,40 +418,19 @@ void Roboteq::odom_loop()
     
     //RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
     
-    // encoders[0] = right, encoders[1] = left (or vice versa, depending on your config)
-    // Use encoders for odometry update, e.g.:
-    // ch1_odom_encoder = encoders[0];
-    // if we haven't received encoder counts in some time then restart streaming
-    ch1_odom_encoder =  sample->channel_1;
-    ch2_odom_encoder =  sample->channel_2;
-
-    if (ch1_odom_encoder == INT_MAX || ch2_odom_encoder == INT_MAX)
-    {
-        return; // early return if no encoders read
-    }
-
-    ch2_odom_encoder *=-1;
-    ch1_odom_encoder *=-1;
-
-        // *******************************************************
-    if (channel_1 == "right" && channel_2 == "left")
-    {
-        odom_encoder_right = ch1_odom_encoder;
-        odom_encoder_left  = ch2_odom_encoder;
-    }
-    else if (channel_1 == "left" && channel_2 == "right")
-    {
-        odom_encoder_right = ch2_odom_encoder;
-        odom_encoder_left  = ch1_odom_encoder;
-    }
-    else
-    {
+    const auto integration = odometry_integrator_.integrate_channel_sample(
+        sample->channel_1,
+        sample->channel_2,
+        dt,
+        channel_1,
+        channel_2);
+    if (!integration.has_value()) {
         RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
         return;
     }
 
-    publish_ticks(odom_encoder_left, odom_encoder_right);
-    odom_publish(odom_encoder_left, odom_encoder_right, dt);
+    publish_ticks(integration->ticks.left_ticks, integration->ticks.right_ticks);
+    odom_publish(*integration);
     
     return ; // early return if no encoders read
 }
@@ -548,22 +454,13 @@ void Roboteq::publish_ticks(int left_ticks,int right_ticks)
 
 
 
-void Roboteq::odom_publish(int left_ticks, int right_ticks, double dt)
+void Roboteq::odom_publish(const roboteq_ros2_driver::odometry::IntegrationResult & integration)
 {
 
-    RobotDisplacement displacement = differential_drive_kinematics_.calculateForwardKinematics(left_ticks, right_ticks);
-    const double previous_yaw = current_pose.theta;
+    odom_x = integration.pose.x;
+    odom_y = integration.pose.y;
+    odom_yaw = integration.pose.theta;
 
-    current_pose = differential_drive_kinematics_.updateRobotPose(current_pose, displacement);
-
-
-    odom_x = current_pose.x;
-    odom_y = current_pose.y;
-    odom_yaw = current_pose.theta;
-
-    odom_last_x = odom_x;
-    odom_last_y = odom_y;
-    odom_last_yaw = odom_yaw;
     // convert yaw to quat;
     tf2::Quaternion tf2_quat;
     tf2_quat.setRPY(0, 0, odom_yaw);
@@ -576,19 +473,12 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks, double dt)
     odom_msg.pose.pose.position.y = odom_y;
     odom_msg.pose.pose.position.z = 0.0;
     odom_msg.pose.pose.orientation = quat;
-    const auto measured_twist = roboteq_ros2_driver::odom_twist::calculate_measured_twist(
-        displacement.linear_x,
-        previous_yaw,
-        odom_yaw,
-        dt,
-        odom_twist_initialized_);
-    odom_msg.twist.twist.linear.x = measured_twist.linear_x;
+    odom_msg.twist.twist.linear.x = integration.twist.linear_x;
     odom_msg.twist.twist.linear.y = 0.0;
     odom_msg.twist.twist.linear.z = 0.0;
     odom_msg.twist.twist.angular.x = 0.0;
     odom_msg.twist.twist.angular.y = 0.0;
-    odom_msg.twist.twist.angular.z = measured_twist.angular_z;
-    odom_twist_initialized_ = true;
+    odom_msg.twist.twist.angular.z = integration.twist.angular_z;
     if (odom_tf_broadcaster_) {
         odom_tf_broadcaster_->sendTransform(
             roboteq_ros2_driver::odom_tf::build_odom_to_base_transform(
@@ -605,11 +495,6 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks, double dt)
 
 void Roboteq::command_watchdog_loop()
 {
-    starttime = millis();
-    hstimer = starttime;
-    mstimer = starttime;
-    lstimer = starttime;
-
     const double command_age_s = received_first_cmd_ ?
         (this->now() - last_cmd_time_).seconds() : 0.0;
     if (roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
@@ -650,7 +535,8 @@ void Roboteq::start_serial_worker()
         static_cast<int>(serial_reconnect_interval_s_ * 1000.0));
     worker_config.require_fresh_command_after_reconnect = require_fresh_command_after_reconnect_;
     worker_config.required_settings =
-        required_controller_settings(open_loop, encoder_ppr, max_amps, max_rpm);
+        roboteq_ros2_driver::configuration::required_controller_settings(
+            open_loop, encoder_ppr, max_amps, max_rpm);
     worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
         RCLCPP_WARN(logger, "%s", message.c_str());
     };

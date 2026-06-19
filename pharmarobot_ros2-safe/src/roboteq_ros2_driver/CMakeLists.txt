@@ -102,6 +102,24 @@ target_include_directories(roboteq_command_scaling PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_command_conversion
+  src/roboteq_command_conversion.cpp
+)
+
+target_include_directories(roboteq_command_conversion PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_configuration
+  src/roboteq_configuration.cpp
+)
+
+target_include_directories(roboteq_configuration PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(roboteq_serial_transport
   src/roboteq_serial_transport.cpp
 )
@@ -126,6 +144,7 @@ target_include_directories(roboteq_serial_worker PUBLIC
 
 target_link_libraries(roboteq_serial_worker
   roboteq_command_scaling
+  roboteq_configuration
   roboteq_protocol
   roboteq_serial_transport
 )
@@ -147,6 +166,21 @@ ament_target_dependencies(differential_drive_kinematics
   rclcpp
 )
 
+add_library(roboteq_odometry
+  src/roboteq_odometry.cpp
+)
+
+target_include_directories(roboteq_odometry PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/differential_drive_kinematics>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(roboteq_odometry
+  differential_drive_kinematics
+  roboteq_odom_twist
+)
+
 # ---------------------------------------------------------------------------
 # Main node executable
 # ---------------------------------------------------------------------------
@@ -157,7 +191,10 @@ add_executable(${PROJECT_NAME}_node
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
   roboteq_command_watchdog
+  roboteq_command_conversion
   roboteq_command_scaling
+  roboteq_configuration
+  roboteq_odometry
   roboteq_odom_covariance
   roboteq_odom_tf
   roboteq_odom_twist
@@ -212,7 +249,10 @@ ament_export_dependencies(
 install(TARGETS
   roboteq_protocol
   roboteq_command_watchdog
+  roboteq_command_conversion
   roboteq_command_scaling
+  roboteq_configuration
+  roboteq_odometry
   roboteq_odom_covariance
   roboteq_odom_tf
   roboteq_odom_twist
@@ -233,6 +273,11 @@ install(DIRECTORY launch config
 
 install(DIRECTORY include/
   DESTINATION include/
+)
+
+install(FILES
+  src/differential_drive_kinematics/differential_drive_kinematics.hpp
+  DESTINATION include
 )
 
 # ---------------------------------------------------------------------------
@@ -288,6 +333,30 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_command_scaling
     roboteq_command_scaling
+  )
+
+  ament_add_gtest(test_command_conversion
+    test/test_command_conversion.cpp
+  )
+
+  target_link_libraries(test_command_conversion
+    roboteq_command_conversion
+  )
+
+  ament_add_gtest(test_roboteq_configuration
+    test/test_roboteq_configuration.cpp
+  )
+
+  target_link_libraries(test_roboteq_configuration
+    roboteq_configuration
+  )
+
+  ament_add_gtest(test_roboteq_odometry
+    test/test_roboteq_odometry.cpp
+  )
+
+  target_link_libraries(test_roboteq_odometry
+    roboteq_odometry
   )
 
   ament_add_gtest(test_serial_worker

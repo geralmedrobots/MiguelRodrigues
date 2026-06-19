@@ -13,17 +13,11 @@
 #include <thread>
 #include <vector>
 
+#include "roboteq_ros2_driver/roboteq_configuration.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 namespace roboteq_ros2_driver
 {
-
-struct RequiredControllerSetting
-{
-  std::string name;
-  int channel{0};
-  int expected_value{0};
-};
 
 struct DesiredMotorCommand
 {
@@ -52,7 +46,7 @@ struct SerialWorkerConfig
   std::chrono::milliseconds encoder_poll_period{50};
   std::chrono::milliseconds reconnect_interval{1000};
   bool require_fresh_command_after_reconnect{true};
-  std::vector<RequiredControllerSetting> required_settings;
+  std::vector<configuration::RequiredControllerSetting> required_settings;
   std::function<void(const std::string &)> log_callback;
 };
 

@@ -13,7 +13,7 @@ namespace roboteq_ros2_driver
 namespace
 {
 
-std::string query_for_setting(const RequiredControllerSetting & setting)
+std::string query_for_setting(const configuration::RequiredControllerSetting & setting)
 {
   std::ostringstream query;
   query << "~" << setting.name;
