@@ -17,11 +17,13 @@ validation::DriverParameters valid_parameters()
     115200,
     0.0881,
     0.453,
+    1024,
+    4096,
     -1024,
-    -4096,
     1,
     1,
-    -1,
+    1,
+    1,
     -1,
     5.0,
     100,
@@ -56,8 +58,9 @@ TEST(DriverParameterValidation, AcceptsProductionConfigurationAndBothExplicitSig
 
   parameters.motor_sign_1 = -1;
   parameters.motor_sign_2 = -1;
-  parameters.encoder_sign_1 = 1;
-  parameters.encoder_sign_2 = 1;
+  parameters.encoder_sign_1 = -1;
+  parameters.encoder_sign_2 = -1;
+  parameters.command_angular_sign = 1;
   EXPECT_FALSE(validation::validate(parameters).has_value());
 }
 
@@ -95,11 +98,23 @@ TEST(DriverParameterValidation, RejectsZeroAndUnrepresentableEncoderMagnitudes)
   parameters = valid_parameters();
   parameters.encoder_cpr = std::numeric_limits<int>::min();
   expect_invalid(parameters, "encoder_cpr");
+
+  parameters = valid_parameters();
+  parameters.encoder_eppr = 0;
+  expect_invalid(parameters, "encoder_eppr");
+
+  parameters = valid_parameters();
+  parameters.encoder_eppr = std::numeric_limits<int>::min();
+  expect_invalid(parameters, "encoder_eppr");
 }
 
-TEST(DriverParameterValidation, AcceptsPositiveAndNegativeEncoderMagnitudes)
+TEST(DriverParameterValidation, AcceptsPositiveEncoderMagnitudesAndSignedControllerEPPR)
 {
   auto parameters = valid_parameters();
+  parameters.encoder_eppr = -1024;
+  EXPECT_FALSE(validation::validate(parameters).has_value());
+
+  parameters = valid_parameters();
   parameters.encoder_ppr = 1024;
   parameters.encoder_cpr = 4096;
   EXPECT_FALSE(validation::validate(parameters).has_value());
@@ -123,6 +138,10 @@ TEST(DriverParameterValidation, RejectsInvalidExplicitSigns)
     parameters = valid_parameters();
     parameters.encoder_sign_2 = value;
     expect_invalid(parameters, "encoder_sign_2");
+
+    parameters = valid_parameters();
+    parameters.command_angular_sign = value;
+    expect_invalid(parameters, "command_angular_sign");
   }
 }
 

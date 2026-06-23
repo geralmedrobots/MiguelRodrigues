@@ -30,8 +30,8 @@ std::optional<WheelTickDelta> map_channel_encoder_sample_to_wheels(
   int channel_2_ticks,
   const std::string & channel_1,
   const std::string & channel_2,
-  int encoder_sign_1 = -1,
-  int encoder_sign_2 = -1);
+  int encoder_sign_1 = 1,
+  int encoder_sign_2 = 1);
 
 class OdometryIntegrator
 {
@@ -47,8 +47,8 @@ public:
     double dt,
     const std::string & channel_1,
     const std::string & channel_2,
-    int encoder_sign_1 = -1,
-    int encoder_sign_2 = -1);
+    int encoder_sign_1 = 1,
+    int encoder_sign_2 = 1);
 
 private:
   DifferentialDriveKinematics kinematics_;

@@ -18,10 +18,12 @@ struct DriverParameters
   double wheelbase{0.0};
   int encoder_ppr{0};
   int encoder_cpr{0};
+  int encoder_eppr{0};
   int motor_sign_1{0};
   int motor_sign_2{0};
   int encoder_sign_1{0};
   int encoder_sign_2{0};
+  int command_angular_sign{0};
   double max_amps{0.0};
   int max_rpm{0};
   double command_timeout_s{0.0};

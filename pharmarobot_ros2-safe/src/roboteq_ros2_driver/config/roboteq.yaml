@@ -11,12 +11,14 @@ roboteq_ros2_driver:
     cmd_timeout_s: 0.5
     wheel_radius: 0.0881
     wheelbase: 0.453
-    encoder_ppr: -1024
-    encoder_cpr: -4096
+    encoder_ppr: 1024
+    encoder_cpr: 4096
+    encoder_eppr: -1024
     motor_sign_1: 1
     motor_sign_2: 1
-    encoder_sign_1: -1
-    encoder_sign_2: -1
+    encoder_sign_1: 1
+    encoder_sign_2: 1
+    command_angular_sign: -1
     max_amps: 5.0
     max_rpm: 100
     serial_read_timeout_ms: 50

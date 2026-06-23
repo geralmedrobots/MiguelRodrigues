@@ -262,6 +262,7 @@ install(TARGETS
   roboteq_command_conversion
   roboteq_command_scaling
   roboteq_configuration
+  roboteq_driver_parameter_validation
   roboteq_odometry
   roboteq_odom_covariance
   roboteq_odom_tf

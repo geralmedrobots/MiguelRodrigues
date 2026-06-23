@@ -40,9 +40,6 @@
 
 
 
-#define NORMALIZE(_z) atan2(sin(_z), cos(_z))
-
-
 #define ROBOTEQ_CYCLE_PERIOD 50ms // ms
 #define ROBORTEQ_WRITING_TIMEOUT 5 //
 
@@ -122,12 +119,15 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     open_loop = this->declare_parameter("open_loop", false);
     wheel_radius = this->declare_parameter("wheel_radius", 0.085); // in meters
     wheelbase = this->declare_parameter("wheelbase", 0.453); // in meters
-    encoder_ppr = this->declare_parameter("encoder_ppr", -1024);
-    encoder_cpr = this->declare_parameter("encoder_cpr", -4096);
+    encoder_ppr = this->declare_parameter("encoder_ppr", 1024);
+    encoder_cpr = this->declare_parameter("encoder_cpr", 4096);
+    const auto default_eppr = -1024;
+    encoder_eppr = this->declare_parameter("encoder_eppr", default_eppr);
     motor_sign_1 = this->declare_parameter("motor_sign_1", 1);
     motor_sign_2 = this->declare_parameter("motor_sign_2", 1);
-    encoder_sign_1 = this->declare_parameter("encoder_sign_1", -1);
-    encoder_sign_2 = this->declare_parameter("encoder_sign_2", -1);
+    encoder_sign_1 = this->declare_parameter("encoder_sign_1", 1);
+    encoder_sign_2 = this->declare_parameter("encoder_sign_2", 1);
+    command_angular_sign = this->declare_parameter("command_angular_sign", -1);
     max_amps = this->declare_parameter("max_amps", 5.0);
     max_rpm = this->declare_parameter("max_rpm", 100);
     
@@ -256,10 +256,12 @@ void Roboteq::update_parameters()
     this->get_parameter("wheelbase", wheelbase);
     this->get_parameter("encoder_ppr", encoder_ppr);
     this->get_parameter("encoder_cpr", encoder_cpr);
+    this->get_parameter("encoder_eppr", encoder_eppr);
     this->get_parameter("motor_sign_1", motor_sign_1);
     this->get_parameter("motor_sign_2", motor_sign_2);
     this->get_parameter("encoder_sign_1", encoder_sign_1);
     this->get_parameter("encoder_sign_2", encoder_sign_2);
+    this->get_parameter("command_angular_sign", command_angular_sign);
     this->get_parameter("max_amps", max_amps);
     this->get_parameter("max_rpm", max_rpm);
     this->get_parameter("channel_1", channel_1);
@@ -297,10 +299,12 @@ Roboteq::validation_parameters() const
         wheelbase,
         encoder_ppr,
         encoder_cpr,
+        encoder_eppr,
         motor_sign_1,
         motor_sign_2,
         encoder_sign_1,
         encoder_sign_2,
+        command_angular_sign,
         max_amps,
         max_rpm,
         cmd_timeout_s_,
@@ -335,7 +339,8 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     const auto wheel_speeds = roboteq_ros2_driver::command_conversion::twist_to_wheel_speeds(
         twist_msg->linear.x,
         twist_msg->angular.z,
-        wheelbase);
+        wheelbase,
+        command_angular_sign);
 
     RCLCPP_DEBUG(
         this->get_logger(),
@@ -470,8 +475,8 @@ void Roboteq::publish_ticks(int left_ticks,int right_ticks)
     msg.left_ticks = left_ticks;
     msg.right_ticks = right_ticks;
 
-    msg.right_ticks_norm =(-1)*(double)right_ticks / encoder_cpr; // convert ticks to radians
-    msg.left_ticks_norm = (-1)*(double)left_ticks / encoder_cpr; // convert ticks to radians
+    msg.right_ticks_norm = static_cast<double>(right_ticks) / encoder_cpr; // convert ticks to turns
+    msg.left_ticks_norm = static_cast<double>(left_ticks) / encoder_cpr; // convert ticks to turns
 
     ticks_publisher_->publish(msg);
 }
@@ -560,7 +565,7 @@ void Roboteq::start_serial_worker()
     worker_config.require_fresh_command_after_reconnect = require_fresh_command_after_reconnect_;
     worker_config.required_settings =
         roboteq_ros2_driver::configuration::required_controller_settings(
-            open_loop, encoder_ppr, max_amps, max_rpm);
+            open_loop, encoder_eppr, max_amps, max_rpm);
     worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
         RCLCPP_WARN(logger, "%s", message.c_str());
     };

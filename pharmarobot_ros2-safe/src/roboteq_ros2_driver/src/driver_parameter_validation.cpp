@@ -49,6 +49,14 @@ std::optional<ValidationError> nonzero_magnitude(const char * name, int value)
   return std::nullopt;
 }
 
+std::optional<ValidationError> positive_magnitude(const char * name, int value)
+{
+  if (value <= 0) {
+    return ValidationError{name, "must be positive"};
+  }
+  return std::nullopt;
+}
+
 bool is_channel_name(const std::string & value)
 {
   return value == "left" || value == "right";
@@ -70,10 +78,13 @@ std::optional<ValidationError> validate(const DriverParameters & p)
   if (const auto error = positive_finite("wheelbase", p.wheelbase)) {
     return error;
   }
-  if (const auto error = nonzero_magnitude("encoder_ppr", p.encoder_ppr)) {
+  if (const auto error = positive_magnitude("encoder_ppr", p.encoder_ppr)) {
     return error;
   }
-  if (const auto error = nonzero_magnitude("encoder_cpr", p.encoder_cpr)) {
+  if (const auto error = positive_magnitude("encoder_cpr", p.encoder_cpr)) {
+    return error;
+  }
+  if (const auto error = nonzero_magnitude("encoder_eppr", p.encoder_eppr)) {
     return error;
   }
   if (const auto error = explicit_sign("motor_sign_1", p.motor_sign_1)) {
@@ -86,6 +97,9 @@ std::optional<ValidationError> validate(const DriverParameters & p)
     return error;
   }
   if (const auto error = explicit_sign("encoder_sign_2", p.encoder_sign_2)) {
+    return error;
+  }
+  if (const auto error = explicit_sign("command_angular_sign", p.command_angular_sign)) {
     return error;
   }
   if (const auto error = positive_finite("max_amps", p.max_amps)) {
