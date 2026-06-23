@@ -1,12 +1,20 @@
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
-#include "roboteq_ros2_driver/command_scaling.hpp"
-#include "roboteq_ros2_driver/roboteq_protocol.hpp"
-
+#include <charconv>
+#include <string_view>
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <iomanip>
+#include <memory>
 #include <sstream>
+#include <string>
+#include <system_error>
 #include <utility>
+#include <vector>
+
+#include "roboteq_ros2_driver/command_scaling.hpp"
+#include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 namespace roboteq_ros2_driver
 {
@@ -22,6 +30,95 @@ std::string query_for_setting(const configuration::RequiredControllerSetting & s
   }
   query << "\r";
   return query.str();
+}
+
+std::string visible_text(const std::string & text)
+{
+  if (text.empty()) {
+    return "<no response>";
+  }
+  std::string visible;
+  for (const unsigned char ch : text) {
+    if (ch == '\r') {
+      visible += "\\r";
+    } else if (ch == '\n') {
+      visible += "\\n";
+    } else if (ch == '\t') {
+      visible += "\\t";
+    } else if (ch == '\\') {
+      visible += "\\\\";
+    } else if (ch == '"') {
+      visible += "\\\"";
+    } else if (ch >= 0x20 && ch <= 0x7e) {
+      visible += static_cast<char>(ch);
+    } else {
+      std::ostringstream escaped;
+      escaped << "\\x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') <<
+        static_cast<int>(ch);
+      visible += escaped.str();
+    }
+  }
+  return visible;
+}
+
+std::string validation_context(
+  const std::string & phase,
+  const std::string & category,
+  const std::string & name,
+  int channel,
+  const std::string & query,
+  const std::string & expected_prefix,
+  const std::string & expected_value,
+  const std::string & response,
+  const std::string & reason)
+{
+  std::ostringstream stream;
+  stream << "phase=" << phase << " category=" << category << " query_name=" << name <<
+    " channel=";
+  if (channel > 0) {
+    stream << channel;
+  } else {
+    stream << "none";
+  }
+  stream << " transmitted=\"" << visible_text(query) <<
+    "\" expected_prefix=\"" << expected_prefix <<
+    "\" expected_value=\"" << expected_value <<
+    "\" received=\"" << visible_text(response) <<
+    "\" reason=" << visible_text(reason);
+  return stream.str();
+}
+
+std::string transport_failure_category(const std::string & error)
+{
+  if (error.find("rejected") != std::string::npos) {
+    return "rejection";
+  }
+  if (error.find("unexpected response prefix") != std::string::npos) {
+    return "wrong_prefix";
+  }
+  if (error.find("timed out") != std::string::npos) {
+    return "timeout";
+  }
+  return "transport_error";
+}
+
+std::string malformed_numeric_reason(
+  const std::string & response, const std::string & expected_prefix)
+{
+  const std::string_view payload(response.data() + expected_prefix.size(),
+    response.size() - expected_prefix.size());
+  if (payload.empty()) {
+    return "malformed numeric response: value is empty";
+  }
+  int ignored = 0;
+  const auto parsed = std::from_chars(payload.data(), payload.data() + payload.size(), ignored);
+  if (parsed.ec == std::errc::invalid_argument) {
+    return "malformed numeric response: value is not an integer";
+  }
+  if (parsed.ec == std::errc::result_out_of_range) {
+    return "malformed numeric response: integer is out of range";
+  }
+  return "malformed numeric response: trailing characters after integer";
 }
 
 }  // namespace
@@ -235,10 +332,20 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
   if (config_.log_callback) {
     config_.log_callback("Roboteq serial worker connecting");
   }
-  if (!transport_->open(error)) {
-    return false;
-  }
-  if (!sendStop("startup/reconnect", error)) {
+  try {
+    if (!transport_->open(error)) {
+      error = "connectAndValidate: phase=connection category=transport_error "
+        "operation=serial_open reason=" + visible_text(error);
+      return false;
+    }
+    if (!sendStop("startup/reconnect", error)) {
+      error = "connectAndValidate: phase=connection category=transport_error "
+        "operation=startup_reconnect_stop reason=" + visible_text(error);
+      return false;
+    }
+  } catch (const std::exception & ex) {
+    error = "connectAndValidate: phase=connection category=transport_exception reason=" +
+      visible_text(ex.what());
     return false;
   }
   {
@@ -249,9 +356,11 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
     config_.log_callback("Roboteq serial worker configuring and validating controller");
   }
   if (!validateControllerConfiguration(error)) {
+    error = "connectAndValidate: configuration validation failed: " + error;
     return false;
   }
   if (!validateCommunication(error)) {
+    error = "connectAndValidate: communication validation failed: " + error;
     return false;
   }
   if (config_.log_callback) {
@@ -277,20 +386,40 @@ bool SerialIoWorker::sendDesiredCommand(const DesiredMotorCommand & command, std
 bool SerialIoWorker::validateControllerConfiguration(std::string & error)
 {
   for (const auto & setting : config_.required_settings) {
+    const std::string query = query_for_setting(setting);
+    const std::string expected_prefix = setting.name + "=";
+    const std::string expected_value = std::to_string(setting.expected_value);
     std::string response;
-    if (!transport_->query(query_for_setting(setting), setting.name + "=", response, error)) {
+    try {
+      if (!transport_->query(query, expected_prefix, response, error)) {
+        error = validation_context(
+          "configuration_validation", transport_failure_category(error), setting.name,
+          setting.channel, query, expected_prefix, expected_value, response, error);
+        return false;
+      }
+    } catch (const std::exception & ex) {
+      error = validation_context(
+        "configuration_validation", "transport_exception", setting.name, setting.channel, query,
+        expected_prefix, expected_value, response,
+        std::string("transport exception: ") + ex.what());
       return false;
     }
     const auto actual = protocol::parse_config_readback(response, setting.name);
     if (!actual.has_value()) {
-      error = "malformed readback for " + setting.name;
+      const bool has_expected_prefix = response.rfind(expected_prefix, 0) == 0;
+      const std::string reason = has_expected_prefix ?
+        malformed_numeric_reason(response, expected_prefix) : "wrong response prefix";
+      error = validation_context(
+        "configuration_validation", has_expected_prefix ? "malformed_response" : "wrong_prefix",
+        setting.name, setting.channel, query, expected_prefix, expected_value, response, reason);
       return false;
     }
     if (*actual != setting.expected_value) {
       std::ostringstream stream;
-      stream << "configuration mismatch for " << setting.name << ": expected "
-             << setting.expected_value << " got " << *actual;
-      error = stream.str();
+      stream << "value mismatch; expected=" << setting.expected_value << " actual=" << *actual;
+      error = validation_context(
+        "configuration_validation", "value_mismatch", setting.name, setting.channel, query,
+        expected_prefix, expected_value, response, stream.str());
       return false;
     }
   }
@@ -299,12 +428,31 @@ bool SerialIoWorker::validateControllerConfiguration(std::string & error)
 
 bool SerialIoWorker::validateCommunication(std::string & error)
 {
+  const std::string query = "?FID\r";
+  const std::string expected_prefix = "FID=";
+  const std::string expected_value = "non-empty firmware identifier";
   std::string response;
-  if (!transport_->query("?FID\r", "FID=", response, error)) {
+  try {
+    if (!transport_->query(query, expected_prefix, response, error)) {
+      error = validation_context(
+        "communication_validation", transport_failure_category(error), "FID", 0, query,
+        expected_prefix, expected_value, response, error);
+      return false;
+    }
+  } catch (const std::exception & ex) {
+    error = validation_context(
+      "communication_validation", "transport_exception", "FID", 0, query, expected_prefix,
+      expected_value, response,
+      std::string("transport exception: ") + ex.what());
     return false;
   }
   if (!protocol::parse_firmware_id(response).has_value()) {
-    error = "malformed firmware response";
+    const bool has_expected_prefix = response.rfind(expected_prefix, 0) == 0;
+    const std::string reason = has_expected_prefix ?
+      "malformed firmware response: identifier is empty" : "wrong response prefix";
+    error = validation_context(
+      "communication_validation", has_expected_prefix ? "malformed_response" : "wrong_prefix",
+      "FID", 0, query, expected_prefix, expected_value, response, reason);
     return false;
   }
   return true;
@@ -334,10 +482,42 @@ bool SerialIoWorker::pollEncoder(std::string & error)
   return true;
 }
 
-void SerialIoWorker::markFailure(const std::string &)
+void SerialIoWorker::markFailure(const std::string & error)
 {
+  ConnectionState previous_state;
+  const char * previous_state_name = "unknown";
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    previous_state = state_;
+  }
+  switch (previous_state) {
+    case ConnectionState::disconnected:
+      previous_state_name = "disconnected";
+      break;
+    case ConnectionState::connecting:
+      previous_state_name = "connecting";
+      break;
+    case ConnectionState::configuring:
+      previous_state_name = "configuring";
+      break;
+    case ConnectionState::waiting_for_fresh_command:
+      previous_state_name = "waiting_for_fresh_command";
+      break;
+    case ConnectionState::ready:
+      previous_state_name = "ready";
+      break;
+    case ConnectionState::unhealthy:
+      previous_state_name = "unhealthy";
+      break;
+    case ConnectionState::reconnecting:
+      previous_state_name = "reconnecting";
+      break;
+  }
   if (config_.log_callback) {
-    config_.log_callback("Roboteq serial worker entering reconnect after serial failure");
+    std::ostringstream stream;
+    stream << "Roboteq serial failure: " << error << "; connection_state_transition=" <<
+      previous_state_name << "->unhealthy; reconnect scheduled";
+    config_.log_callback(stream.str());
   }
   if (transport_->isOpen()) {
     std::string ignored_error;

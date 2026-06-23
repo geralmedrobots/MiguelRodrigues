@@ -371,6 +371,18 @@ if(BUILD_TESTING)
     serial
   )
 
+  ament_add_gtest(test_serial_transport
+    test/test_serial_transport.cpp
+  )
+
+  target_link_libraries(test_serial_transport
+    roboteq_serial_transport
+  )
+
+  ament_target_dependencies(test_serial_transport
+    serial
+  )
+
   ament_lint_auto_find_test_dependencies()
 endif()
 

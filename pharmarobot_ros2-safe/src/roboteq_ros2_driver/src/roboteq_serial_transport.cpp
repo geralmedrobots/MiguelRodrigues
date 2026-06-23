@@ -134,6 +134,13 @@ bool RoboteqSerialTransport::query(
   while (std::chrono::steady_clock::now() < deadline) {
     std::string line;
     if (!readLine(deadline, line, error)) {
+      if (!response.empty()) {
+        const std::string partial = line.empty() ? "" : "; subsequent_partial=" + line;
+        error = "unexpected response prefix: expected " + expected_prefix + " received " +
+          response + partial + "; subsequent_error=" + error;
+      } else if (!line.empty()) {
+        response = line;
+      }
       return false;
     }
     if (line.empty()) {
@@ -150,6 +157,7 @@ bool RoboteqSerialTransport::query(
       continue;
     }
     if (line == "-") {
+      response = line;
       error = "Roboteq rejected query";
       return false;
     }
@@ -157,9 +165,14 @@ bool RoboteqSerialTransport::query(
       response = line;
       return true;
     }
+    response = line;
   }
 
-  error = "serial query timed out waiting for " + expected_prefix;
+  if (response.empty()) {
+    error = "serial query timed out waiting for " + expected_prefix;
+  } else {
+    error = "unexpected response prefix: expected " + expected_prefix + " received " + response;
+  }
   return false;
 }
 
