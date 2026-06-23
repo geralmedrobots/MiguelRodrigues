@@ -120,6 +120,15 @@ target_include_directories(roboteq_configuration PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_driver_parameter_validation
+  src/driver_parameter_validation.cpp
+)
+
+target_include_directories(roboteq_driver_parameter_validation PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_library(roboteq_serial_transport
   src/roboteq_serial_transport.cpp
 )
@@ -194,6 +203,7 @@ target_link_libraries(${PROJECT_NAME}_node
   roboteq_command_conversion
   roboteq_command_scaling
   roboteq_configuration
+  roboteq_driver_parameter_validation
   roboteq_odometry
   roboteq_odom_covariance
   roboteq_odom_tf
@@ -357,6 +367,14 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_roboteq_odometry
     roboteq_odometry
+  )
+
+  ament_add_gtest(test_driver_parameter_validation
+    test/test_driver_parameter_validation.cpp
+  )
+
+  target_link_libraries(test_driver_parameter_validation
+    roboteq_driver_parameter_validation
   )
 
   ament_add_gtest(test_serial_worker

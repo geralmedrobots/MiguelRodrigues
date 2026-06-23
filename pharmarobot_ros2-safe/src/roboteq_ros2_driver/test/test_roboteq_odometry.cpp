@@ -26,12 +26,30 @@ TEST(RoboteqOdometry, MapsSwappedChannelsAndPreservesEncoderSignCorrection)
   EXPECT_EQ(ticks->right_ticks, -20);
 }
 
+TEST(RoboteqOdometry, AppliesExplicitPerChannelEncoderSigns)
+{
+  const auto ticks = odometry::map_channel_encoder_sample_to_wheels(
+    10, 20, "right", "left", 1, -1);
+
+  ASSERT_TRUE(ticks.has_value());
+  EXPECT_EQ(ticks->left_ticks, -20);
+  EXPECT_EQ(ticks->right_ticks, 10);
+}
+
 TEST(RoboteqOdometry, RejectsInvalidEncoderOrChannelMapping)
 {
-  EXPECT_FALSE(odometry::map_channel_encoder_sample_to_wheels(
-    INT_MAX, 20, "right", "left").has_value());
-  EXPECT_FALSE(odometry::map_channel_encoder_sample_to_wheels(
-    10, 20, "right", "right").has_value());
+  EXPECT_FALSE(
+    odometry::map_channel_encoder_sample_to_wheels(
+      INT_MAX, 20, "right", "left").has_value());
+  EXPECT_FALSE(
+    odometry::map_channel_encoder_sample_to_wheels(
+      10, 20, "right", "right").has_value());
+  EXPECT_FALSE(
+    odometry::map_channel_encoder_sample_to_wheels(
+      10, 20, "right", "left", 0, -1).has_value());
+  EXPECT_FALSE(
+    odometry::map_channel_encoder_sample_to_wheels(
+      INT_MIN, 20, "right", "left", -1, -1).has_value());
 }
 
 TEST(RoboteqOdometry, IntegratesFirstSampleWithZeroTwist)

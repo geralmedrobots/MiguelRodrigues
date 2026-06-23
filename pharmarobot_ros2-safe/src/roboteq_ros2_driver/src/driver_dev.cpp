@@ -1,5 +1,6 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/command_watchdog.hpp"
+#include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
@@ -52,32 +53,6 @@
 
 namespace
 {
-int sanitize_positive_int_parameter(
-    const rclcpp::Logger & logger,
-    const char * name,
-    int value,
-    int fallback)
-{
-    if (value > 0) {
-        return value;
-    }
-    RCLCPP_WARN(logger, "Invalid parameter '%s'=%d; using default %d", name, value, fallback);
-    return fallback;
-}
-
-double sanitize_positive_double_parameter(
-    const rclcpp::Logger & logger,
-    const char * name,
-    double value,
-    double fallback)
-{
-    if (std::isfinite(value) && value > 0.0) {
-        return value;
-    }
-    RCLCPP_WARN(logger, "Invalid parameter '%s'=%.6f; using default %.6f", name, value, fallback);
-    return fallback;
-}
-
 double sanitize_covariance_parameter(
     const rclcpp::Logger & logger,
     const char * name,
@@ -149,6 +124,10 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     wheelbase = this->declare_parameter("wheelbase", 0.453); // in meters
     encoder_ppr = this->declare_parameter("encoder_ppr", -1024);
     encoder_cpr = this->declare_parameter("encoder_cpr", -4096);
+    motor_sign_1 = this->declare_parameter("motor_sign_1", 1);
+    motor_sign_2 = this->declare_parameter("motor_sign_2", 1);
+    encoder_sign_1 = this->declare_parameter("encoder_sign_1", -1);
+    encoder_sign_2 = this->declare_parameter("encoder_sign_2", -1);
     max_amps = this->declare_parameter("max_amps", 5.0);
     max_rpm = this->declare_parameter("max_rpm", 100);
     
@@ -189,6 +168,22 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     require_fresh_command_after_reconnect_ =
         this->declare_parameter("require_fresh_command_after_reconnect", true);
 
+    update_parameters();
+    const auto error = roboteq_ros2_driver::parameter_validation::validate_then_start(
+        validation_parameters(), [this]() {initialize_valid_configuration();});
+    if (error) {
+        RCLCPP_FATAL(
+            this->get_logger(),
+            "Invalid safety-critical parameter '%s': %s",
+            error->parameter.c_str(),
+            error->reason.c_str());
+        throw std::invalid_argument(
+            "Invalid parameter '" + error->parameter + "': " + error->reason);
+    }
+}
+
+void Roboteq::initialize_valid_configuration()
+{
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     odometry_integrator_.init(wheel_radius, wheelbase, encoder_cpr);
 
@@ -203,7 +198,6 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 
     odom_msg = nav_msgs::msg::Odometry();
 
-    update_parameters();
     odom_setup();
 //
 //  odom publisher
@@ -262,6 +256,10 @@ void Roboteq::update_parameters()
     this->get_parameter("wheelbase", wheelbase);
     this->get_parameter("encoder_ppr", encoder_ppr);
     this->get_parameter("encoder_cpr", encoder_cpr);
+    this->get_parameter("motor_sign_1", motor_sign_1);
+    this->get_parameter("motor_sign_2", motor_sign_2);
+    this->get_parameter("encoder_sign_1", encoder_sign_1);
+    this->get_parameter("encoder_sign_2", encoder_sign_2);
     this->get_parameter("max_amps", max_amps);
     this->get_parameter("max_rpm", max_rpm);
     this->get_parameter("channel_1", channel_1);
@@ -287,18 +285,34 @@ void Roboteq::update_parameters()
     this->get_parameter("encoder_poll_period_ms", encoder_poll_period_ms_);
     this->get_parameter("require_fresh_command_after_reconnect", require_fresh_command_after_reconnect_);
 
-    serial_read_timeout_ms_ = sanitize_positive_int_parameter(
-        this->get_logger(), "serial_read_timeout_ms", serial_read_timeout_ms_, 50);
-    serial_write_timeout_ms_ = sanitize_positive_int_parameter(
-        this->get_logger(), "serial_write_timeout_ms", serial_write_timeout_ms_, 50);
-    serial_transaction_timeout_ms_ = sanitize_positive_int_parameter(
-        this->get_logger(), "serial_transaction_timeout_ms", serial_transaction_timeout_ms_, 100);
-    serial_max_response_bytes_ = sanitize_positive_int_parameter(
-        this->get_logger(), "serial_max_response_bytes", serial_max_response_bytes_, 256);
-    serial_reconnect_interval_s_ = sanitize_positive_double_parameter(
-        this->get_logger(), "serial_reconnect_interval_s", serial_reconnect_interval_s_, 1.0);
-    encoder_poll_period_ms_ = sanitize_positive_int_parameter(
-        this->get_logger(), "encoder_poll_period_ms", encoder_poll_period_ms_, 50);
+}
+
+roboteq_ros2_driver::parameter_validation::DriverParameters
+Roboteq::validation_parameters() const
+{
+    return {
+        port,
+        baud,
+        wheel_radius,
+        wheelbase,
+        encoder_ppr,
+        encoder_cpr,
+        motor_sign_1,
+        motor_sign_2,
+        encoder_sign_1,
+        encoder_sign_2,
+        max_amps,
+        max_rpm,
+        cmd_timeout_s_,
+        serial_read_timeout_ms_,
+        serial_write_timeout_ms_,
+        serial_transaction_timeout_ms_,
+        serial_max_response_bytes_,
+        serial_reconnect_interval_s_,
+        encoder_poll_period_ms_,
+        channel_1,
+        channel_2,
+    };
 }
 
 void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_msg)
@@ -352,7 +366,15 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
         channel_speeds->channel_2_mps
     );
 
-    serial_worker_->submitCommand(channel_speeds->channel_1_mps, channel_speeds->channel_2_mps);
+    const auto signed_channel_speeds = roboteq_ros2_driver::command_conversion::apply_motor_signs(
+        *channel_speeds, motor_sign_1, motor_sign_2);
+    if (!signed_channel_speeds) {
+        RCLCPP_ERROR(this->get_logger(), "Rejected command because motor signs are invalid");
+        return;
+    }
+    serial_worker_->submitCommand(
+        signed_channel_speeds->channel_1_mps,
+        signed_channel_speeds->channel_2_mps);
 }
 
 void Roboteq::odom_setup()
@@ -423,7 +445,9 @@ void Roboteq::odom_loop()
         sample->channel_2,
         dt,
         channel_1,
-        channel_2);
+        channel_2,
+        encoder_sign_1,
+        encoder_sign_2);
     if (!integration.has_value()) {
         RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
         return;

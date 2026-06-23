@@ -174,15 +174,136 @@ New serial parameters:
     encoder_poll_period_ms: 50
     require_fresh_command_after_reconnect: true
 
-Invalid non-positive timeout, size, and interval parameters are replaced with
-conservative defaults at startup.
+These are the node defaults. The production `config/roboteq.yaml` currently
+overrides `serial_transaction_timeout_ms` to 500 ms; the node default remains
+100 ms. That production override predates the fail-fast validation work and is
+preserved unchanged by it.
+
+## Fail-fast safety-critical parameter validation
+
+Before odometry setup, ROS publishers/subscribers/timers, serial transport
+construction, or serial-worker construction/start, the node validates all
+safety-critical driver parameters. Invalid configuration produces a FATAL log
+that names the parameter and aborts node construction. It cannot open the
+transport, create/start the worker, validate controller settings, or send a
+controller or motion command. Invalid timeout, size, and interval values are
+rejected rather than silently replaced with defaults.
+
+Validated parameters are:
+
+    port: non-empty
+    baud: positive
+    wheel_radius, wheelbase: finite and positive
+    encoder_ppr, encoder_cpr: non-zero magnitude, excluding INT_MIN
+    motor_sign_1, motor_sign_2: exactly -1 or 1
+    encoder_sign_1, encoder_sign_2: exactly -1 or 1
+    max_amps: finite and positive
+    max_rpm: positive
+    cmd_timeout_s: finite and positive
+    serial_read_timeout_ms, serial_write_timeout_ms: positive
+    serial_transaction_timeout_ms, serial_max_response_bytes: positive
+    serial_reconnect_interval_s: finite and positive
+    encoder_poll_period_ms: positive
+    channel_1, channel_2: one "left" and one "right"
+
+The only upper bounds enforced are software representation bounds already
+implied by the implementation: `max_amps * 10` must fit in an `int`, and
+seconds-to-milliseconds conversions for command timeout and reconnect interval
+must fit in an `int`. No hardware upper limit is imposed because this repository
+does not contain an authoritative controller or robot-specific maximum for
+wheel geometry, CPR/PPR, RPM, current, baud, response size, or timing values.
+
+The explicit sign defaults preserve prior behavior: motor channel commands use
+`+1` and encoder samples use `-1` on both channels. Changing a sign changes
+motor direction or encoder convention and requires the separate safety approval
+and controlled hardware validation defined by the repository workflow.
 
 This change intentionally preserves command conversion, command scaling,
 saturation, odometry math, covariance, dynamic TF, frame IDs, encoder signs,
 motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and the
-existing channel mapping. Manual validation on the robot is still required to
-confirm command latency, reconnect behavior, and odometry feedback timing under
-real serial conditions.
+existing channel mapping. Valid production parameter values and their runtime
+behavior are unchanged; the four sign values are now explicit parameters with
+defaults matching the previous hard-coded behavior.
+
+### Validation and traceability record
+
+Task `AMR-ROBOTEQ-PARAM-001` was validated offline with ROS 2 Foxy. No ROS node,
+serial device, controller, or robot hardware was run. The recorded commands
+were:
+
+    source /opt/ros/foxy/setup.bash
+    colcon build --packages-select roboteq_ros2_driver
+    source install/setup.bash
+    colcon test --packages-select roboteq_ros2_driver --ctest-args -R 'test_driver_parameter_validation|test_command_conversion|test_roboteq_odometry|test_serial_worker' --output-on-failure
+    colcon test --packages-select roboteq_ros2_driver --event-handlers console_direct+
+    colcon test-result --verbose
+    git diff --check
+
+The package build passed. The focused tests passed 40/40 cases: parameter
+validation 12/12, command conversion 6/6, odometry 6/6, and serial worker
+16/16. All 12 functional test executables passed:
+
+    test_roboteq_protocol
+    test_roboteq_watchdog
+    test_roboteq_odom_tf
+    test_roboteq_covariance
+    test_twist_to_channel_speeds
+    test_differential_drive_scaling
+    test_command_conversion
+    test_controller_configuration
+    test_roboteq_odometry
+    test_driver_parameter_validation
+    test_serial_worker
+    test_serial_transport
+
+Five lint target categories still fail and match the recorded baseline:
+copyright, cppcheck, cpplint, uncrustify, and xmllint. Task-specific
+uncrustify regressions were resolved. The xmllint check cannot fetch the ROS
+schema in the restricted validation environment. The copyright check reports
+40 failures in 41 files versus the 37-in-38 baseline; the three additional
+files are the new validation header, implementation, and test. The package's
+BSD-3-Clause declaration does not identify an authoritative copyright owner or
+notice, so no ownership text was invented; copyright provenance remains
+deferred.
+
+Independent review accepted two LOW findings. First, the invalid-start test
+uses counters around the production `validate_then_start` gate rather than a
+full Roboteq component test with an injected transport. Static wiring confirms
+that ROS entity, transport, worker, controller, and motion paths occur after the
+gate, but a component regression test would provide stronger evidence. Second,
+the public validation header is installed while its library target is omitted
+from `install(TARGETS)`; the node works, but downstream install-space use of
+that validation API is incomplete.
+
+Configuration provenance is limited to repository defaults and the production
+YAML values. This repository does not record the robot serial number,
+controller model and firmware, parameter source, calibration date, measurement
+uncertainty, or an authoritative hardware limit record. Those omissions are why
+the validator enforces only existing software representation/conversion bounds
+and does not invent upper hardware limits.
+
+### Deferred integration and hardware validation
+
+Agent 6 defined, but did not execute, these additional levels:
+
+1. Level 0: run an offline component with an injected counting transport or
+   PTY in an isolated workspace. Invalid cases must log FATAL and leave ROS
+   entity, transport/open, worker, controller, and motion counters at zero;
+   valid configuration must proceed. This is the recommended next evidence.
+2. Level 1: keep the controller disconnected and replace the production serial
+   path with an audited sentinel/proxy. Invalid cases must produce zero opens
+   and zero bytes; valid configuration may open only after validation and must
+   emit no motion bytes. Use this when deployment-path confidence is needed.
+3. Level 2: connect a representative controller only with STO asserted, motor
+   power isolated where possible, wheels elevated and secured, and external
+   commands disabled. Invalid cases must create no controller connection or
+   bytes; valid startup must be normal with no unsolicited motion. This is
+   optional commissioning evidence.
+
+Levels 0 and 1 require separate ROS/runtime or serial-path approval. Level 2
+requires explicit hardware approval. Hardware validation is deferred unless
+separately approved; real command latency, reconnect behavior, and odometry
+feedback timing therefore remain unverified.
 
 ## Odometry covariance
 

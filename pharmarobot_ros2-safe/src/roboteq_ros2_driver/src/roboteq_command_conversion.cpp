@@ -49,5 +49,20 @@ std::optional<ChannelSpeeds> twist_to_channel_speeds(
     channel_2);
 }
 
+std::optional<ChannelSpeeds> apply_motor_signs(
+  const ChannelSpeeds & channels,
+  int motor_sign_1,
+  int motor_sign_2)
+{
+  if ((motor_sign_1 != -1 && motor_sign_1 != 1) ||
+    (motor_sign_2 != -1 && motor_sign_2 != 1))
+  {
+    return std::nullopt;
+  }
+  return ChannelSpeeds{
+    motor_sign_1 * channels.channel_1_mps,
+      motor_sign_2 * channels.channel_2_mps};
+}
+
 }  // namespace command_conversion
 }  // namespace roboteq_ros2_driver

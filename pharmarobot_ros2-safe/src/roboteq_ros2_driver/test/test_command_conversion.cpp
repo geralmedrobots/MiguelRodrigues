@@ -46,3 +46,15 @@ TEST(CommandConversion, RejectsInvalidChannelMapping)
 
   EXPECT_FALSE(conversion::wheels_to_channels(wheels, "right", "right").has_value());
 }
+
+TEST(CommandConversion, AppliesExplicitMotorSigns)
+{
+  const conversion::ChannelSpeeds channels{2.0, -3.0};
+  const auto signed_channels = conversion::apply_motor_signs(channels, -1, 1);
+
+  ASSERT_TRUE(signed_channels.has_value());
+  EXPECT_DOUBLE_EQ(signed_channels->channel_1_mps, -2.0);
+  EXPECT_DOUBLE_EQ(signed_channels->channel_2_mps, -3.0);
+  EXPECT_FALSE(conversion::apply_motor_signs(channels, 0, 1).has_value());
+  EXPECT_FALSE(conversion::apply_motor_signs(channels, 1, 2).has_value());
+}

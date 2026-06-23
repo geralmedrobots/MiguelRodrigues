@@ -28,6 +28,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
+#include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/roboteq_odometry.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
@@ -78,6 +79,10 @@ class Roboteq : public rclcpp::Node
   double wheel_circumference{};
   int encoder_ppr{};
   int encoder_cpr{};
+  int motor_sign_1{1};
+  int motor_sign_2{1};
+  int encoder_sign_1{-1};
+  int encoder_sign_2{-1};
   double max_amps{};
   int max_rpm{};
   std::string channel_1{};
@@ -111,6 +116,8 @@ class Roboteq : public rclcpp::Node
   void publish_ticks(int left_ticks,int right_ticks);
 
   void update_parameters();
+  roboteq_ros2_driver::parameter_validation::DriverParameters validation_parameters() const;
+  void initialize_valid_configuration();
   void command_watchdog_loop();
   void start_serial_worker();
 

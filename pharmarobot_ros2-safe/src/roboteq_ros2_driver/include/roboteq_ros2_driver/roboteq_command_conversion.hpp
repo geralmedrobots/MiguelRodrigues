@@ -31,6 +31,11 @@ std::optional<ChannelSpeeds> wheels_to_channels(
   const std::string & channel_1,
   const std::string & channel_2);
 
+std::optional<ChannelSpeeds> apply_motor_signs(
+  const ChannelSpeeds & channels,
+  int motor_sign_1,
+  int motor_sign_2);
+
 std::optional<ChannelSpeeds> twist_to_channel_speeds(
   double linear_x,
   double angular_z,
