@@ -109,5 +109,20 @@ std::optional<std::pair<int, int>> parse_encoder_counts(const std::string & resp
   return std::make_pair((*values)[0], (*values)[1]);
 }
 
+std::optional<int> parse_config_readback(
+  const std::string & response, const std::string & setting_name)
+{
+  std::string_view view = trim_line_endings(response);
+  if (setting_name.empty()) {
+    return std::nullopt;
+  }
+
+  const std::string prefix = setting_name + "=";
+  if (!consume_prefix(&view, prefix)) {
+    return std::nullopt;
+  }
+  return parse_int(view);
+}
+
 }  // namespace protocol
 }  // namespace roboteq_ros2_driver

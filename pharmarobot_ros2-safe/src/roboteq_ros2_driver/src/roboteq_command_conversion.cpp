@@ -1,0 +1,53 @@
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
+
+namespace roboteq_ros2_driver
+{
+namespace command_conversion
+{
+namespace
+{
+
+constexpr double kCommandAngularSign = -1.0;
+
+}  // namespace
+
+WheelSpeeds twist_to_wheel_speeds(
+  double linear_x,
+  double angular_z,
+  double wheelbase)
+{
+  const double corrected_angular_z = kCommandAngularSign * angular_z;
+  return {
+    linear_x - (wheelbase * corrected_angular_z / 2.0),
+    linear_x + (wheelbase * corrected_angular_z / 2.0)};
+}
+
+std::optional<ChannelSpeeds> wheels_to_channels(
+  const WheelSpeeds & wheels,
+  const std::string & channel_1,
+  const std::string & channel_2)
+{
+  if (channel_1 == "right" && channel_2 == "left") {
+    return ChannelSpeeds{wheels.right_mps, wheels.left_mps};
+  }
+  if (channel_1 == "left" && channel_2 == "right") {
+    return ChannelSpeeds{wheels.left_mps, wheels.right_mps};
+  }
+  return std::nullopt;
+}
+
+std::optional<ChannelSpeeds> twist_to_channel_speeds(
+  double linear_x,
+  double angular_z,
+  double wheelbase,
+  const std::string & channel_1,
+  const std::string & channel_2)
+{
+  return wheels_to_channels(
+    twist_to_wheel_speeds(linear_x, angular_z, wheelbase),
+    channel_1,
+    channel_2);
+}
+
+}  // namespace command_conversion
+}  // namespace roboteq_ros2_driver

@@ -1,6 +1,6 @@
 roboteq_ros2_driver:
   ros__parameters:
-    pub_odom_tf: false
+    pub_odom_tf: true
     odom_frame: "odom"
     base_frame: "base_link"
     cmdvel_topic: "/cmd_vel/safe"
@@ -15,6 +15,24 @@ roboteq_ros2_driver:
     encoder_cpr: -4096
     max_amps: 5.0
     max_rpm: 100
+    serial_read_timeout_ms: 50
+    serial_write_timeout_ms: 50
+    serial_transaction_timeout_ms: 100
+    serial_max_response_bytes: 256
+    serial_reconnect_interval_s: 1.0
+    encoder_poll_period_ms: 50
+    require_fresh_command_after_reconnect: true
     channel_1: "right" # physical right motor
     channel_2: "left" # physical left motor
-
+    odom_pose_covariance_x: 0.05
+    odom_pose_covariance_y: 0.10
+    odom_pose_covariance_z: 1000000.0
+    odom_pose_covariance_roll: 1000000.0
+    odom_pose_covariance_pitch: 1000000.0
+    odom_pose_covariance_yaw: 0.25
+    odom_twist_covariance_linear_x: 0.10
+    odom_twist_covariance_linear_y: 1000000.0
+    odom_twist_covariance_linear_z: 1000000.0
+    odom_twist_covariance_angular_x: 1000000.0
+    odom_twist_covariance_angular_y: 1000000.0
+    odom_twist_covariance_angular_z: 0.50

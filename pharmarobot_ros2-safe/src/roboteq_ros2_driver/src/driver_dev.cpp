@@ -1,5 +1,10 @@
 #include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
-#include "roboteq_ros2_driver/roboteq_protocol.hpp"
+#include "roboteq_ros2_driver/command_watchdog.hpp"
+#include "roboteq_ros2_driver/odom_covariance.hpp"
+#include "roboteq_ros2_driver/odom_tf.hpp"
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
+#include "roboteq_ros2_driver/roboteq_configuration.hpp"
+#include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 
 #include <algorithm>
@@ -7,16 +12,17 @@
 #include <cmath>
 #include <functional> 
 #include <memory>     
+#include <optional>
+#include <stdexcept>
 #include <string>     
+#include <thread>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/clock.hpp"
 #include <iostream>
 
-#include "std_msgs/msg/string.hpp"
-
 // dependencies for ROS
-#include <serial/serial.h>
 #include <signal.h>
 #include <string>
 #include <sstream>
@@ -40,18 +46,82 @@
 #define ROBORTEQ_WRITING_TIMEOUT 5 //
 
 
-#include <tf2_ros/transform_broadcaster.h>
-#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 
 
 
-serial::Serial controller;
-
 namespace
 {
-constexpr double kCommandAngularSign = -1.0;
-constexpr int kSerialReadDelayMs = 20;
+int sanitize_positive_int_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    int value,
+    int fallback)
+{
+    if (value > 0) {
+        return value;
+    }
+    RCLCPP_WARN(logger, "Invalid parameter '%s'=%d; using default %d", name, value, fallback);
+    return fallback;
+}
+
+double sanitize_positive_double_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    double value,
+    double fallback)
+{
+    if (std::isfinite(value) && value > 0.0) {
+        return value;
+    }
+    RCLCPP_WARN(logger, "Invalid parameter '%s'=%.6f; using default %.6f", name, value, fallback);
+    return fallback;
+}
+
+double sanitize_covariance_parameter(
+    const rclcpp::Logger & logger,
+    const char * name,
+    double value,
+    double fallback)
+{
+    const double sanitized = roboteq_ros2_driver::odom_covariance::sanitize_variance(value, fallback);
+    if (sanitized != value) {
+        RCLCPP_WARN(
+            logger,
+            "Invalid odometry covariance parameter '%s'=%.6f; using default %.6f",
+            name,
+            value,
+            fallback);
+    }
+    return sanitized;
+}
+
+roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig sanitize_covariance_config_with_logging(
+    const rclcpp::Logger & logger,
+    const roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig & config)
+{
+    const auto defaults = roboteq_ros2_driver::odom_covariance::default_config();
+    return {
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_x", config.pose_x, defaults.pose_x),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_y", config.pose_y, defaults.pose_y),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_z", config.pose_z, defaults.pose_z),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_roll", config.pose_roll, defaults.pose_roll),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_pitch", config.pose_pitch, defaults.pose_pitch),
+        sanitize_covariance_parameter(logger, "odom_pose_covariance_yaw", config.pose_yaw, defaults.pose_yaw),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_x", config.twist_linear_x, defaults.twist_linear_x),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_y", config.twist_linear_y, defaults.twist_linear_y),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_linear_z", config.twist_linear_z, defaults.twist_linear_z),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_x", config.twist_angular_x, defaults.twist_angular_x),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_y", config.twist_angular_y, defaults.twist_angular_y),
+        sanitize_covariance_parameter(
+            logger, "odom_twist_covariance_angular_z", config.twist_angular_z, defaults.twist_angular_z),
+    };
+}
 }
 
 uint32_t millis()
@@ -85,26 +155,47 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     channel_1 = this->declare_parameter("channel_1", "right");
     channel_2 = this->declare_parameter("channel_2", "left");
     cmd_timeout_s_ = this->declare_parameter("cmd_timeout_s", 0.5);
+    const auto default_covariance = roboteq_ros2_driver::odom_covariance::default_config();
+    odom_covariance_config_.pose_x =
+        this->declare_parameter("odom_pose_covariance_x", default_covariance.pose_x);
+    odom_covariance_config_.pose_y =
+        this->declare_parameter("odom_pose_covariance_y", default_covariance.pose_y);
+    odom_covariance_config_.pose_z =
+        this->declare_parameter("odom_pose_covariance_z", default_covariance.pose_z);
+    odom_covariance_config_.pose_roll =
+        this->declare_parameter("odom_pose_covariance_roll", default_covariance.pose_roll);
+    odom_covariance_config_.pose_pitch =
+        this->declare_parameter("odom_pose_covariance_pitch", default_covariance.pose_pitch);
+    odom_covariance_config_.pose_yaw =
+        this->declare_parameter("odom_pose_covariance_yaw", default_covariance.pose_yaw);
+    odom_covariance_config_.twist_linear_x =
+        this->declare_parameter("odom_twist_covariance_linear_x", default_covariance.twist_linear_x);
+    odom_covariance_config_.twist_linear_y =
+        this->declare_parameter("odom_twist_covariance_linear_y", default_covariance.twist_linear_y);
+    odom_covariance_config_.twist_linear_z =
+        this->declare_parameter("odom_twist_covariance_linear_z", default_covariance.twist_linear_z);
+    odom_covariance_config_.twist_angular_x =
+        this->declare_parameter("odom_twist_covariance_angular_x", default_covariance.twist_angular_x);
+    odom_covariance_config_.twist_angular_y =
+        this->declare_parameter("odom_twist_covariance_angular_y", default_covariance.twist_angular_y);
+    odom_covariance_config_.twist_angular_z =
+        this->declare_parameter("odom_twist_covariance_angular_z", default_covariance.twist_angular_z);
+    serial_read_timeout_ms_ = this->declare_parameter("serial_read_timeout_ms", 50);
+    serial_write_timeout_ms_ = this->declare_parameter("serial_write_timeout_ms", 50);
+    serial_transaction_timeout_ms_ = this->declare_parameter("serial_transaction_timeout_ms", 100);
+    serial_max_response_bytes_ = this->declare_parameter("serial_max_response_bytes", 256);
+    serial_reconnect_interval_s_ = this->declare_parameter("serial_reconnect_interval_s", 1.0);
+    encoder_poll_period_ms_ = this->declare_parameter("encoder_poll_period_ms", 50);
+    require_fresh_command_after_reconnect_ =
+        this->declare_parameter("require_fresh_command_after_reconnect", true);
 
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
-    differential_drive_kinematics_.initParam(wheel_radius, wheelbase, encoder_cpr);
+    odometry_integrator_.init(wheel_radius, wheelbase, encoder_cpr);
 
     
-    starttime = 0;
-    hstimer   = 0;
-    mstimer   = 0;
-    odom_idx  = 0;
-    odom_encoder_toss  = 5;
-    odom_encoder_left  = 0;
-    odom_encoder_right = 0;
-    ch1_odom_encoder   = 0;
-    ch2_odom_encoder   = 0;
     odom_x         = 0.0;
     odom_y         = 0.0;
     odom_yaw       = 0.0;
-    odom_last_x    = 0.0;
-    odom_last_y    = 0.0;
-    odom_last_yaw  = 0.0;
     odom_last_time = 0;
 
     wheel_circumference = 2*PI*wheel_radius;
@@ -112,17 +203,7 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 
     odom_msg = nav_msgs::msg::Odometry();
 
-    serial::Timeout timeout = serial::Timeout::simpleTimeout(1000);
-    controller.setPort(port);
-    controller.setBaudrate(baud);
-    controller.setTimeout(timeout);
-    // connect to serial port
-    
     update_parameters();
-    // set up parameters for dynamic reconfigure
-    connect();
-    // configure motor controller
-    cmdvel_setup();
     odom_setup();
 //
 //  odom publisher
@@ -134,13 +215,26 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
 // cmd_vel subscriber
 //
 
+    command_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    feedback_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    rclcpp::SubscriptionOptions cmdvel_options;
+    cmdvel_options.callback_group = command_callback_group_;
     cmdvel_sub = this->create_subscription<geometry_msgs::msg::Twist>(
         cmdvel_topic, // topic name
         1,         // QoS history depth
-        std::bind(&Roboteq::cmdvel_callback, this, std::placeholders::_1));
+        std::bind(&Roboteq::cmdvel_callback, this, std::placeholders::_1),
+        cmdvel_options);
     using namespace std::chrono_literals;
-    // set odometry publishing loop timer at 10Hz
-    timer_ = this->create_wall_timer(ROBOTEQ_CYCLE_PERIOD,std::bind(&Roboteq::run, this));
+    command_watchdog_timer_ = this->create_wall_timer(
+        ROBOTEQ_CYCLE_PERIOD,
+        std::bind(&Roboteq::command_watchdog_loop, this),
+        command_callback_group_);
+    odom_timer_ = this->create_wall_timer(
+        ROBOTEQ_CYCLE_PERIOD,
+        std::bind(&Roboteq::odom_loop, this),
+        feedback_callback_group_);
+    start_serial_worker();
     // enable modifying params at run-time
     /*    
     using namespace std::chrono_literals;
@@ -173,40 +267,50 @@ void Roboteq::update_parameters()
     this->get_parameter("channel_1", channel_1);
     this->get_parameter("channel_2", channel_2);
     this->get_parameter("cmd_timeout_s", cmd_timeout_s_);
+    this->get_parameter("odom_pose_covariance_x", odom_covariance_config_.pose_x);
+    this->get_parameter("odom_pose_covariance_y", odom_covariance_config_.pose_y);
+    this->get_parameter("odom_pose_covariance_z", odom_covariance_config_.pose_z);
+    this->get_parameter("odom_pose_covariance_roll", odom_covariance_config_.pose_roll);
+    this->get_parameter("odom_pose_covariance_pitch", odom_covariance_config_.pose_pitch);
+    this->get_parameter("odom_pose_covariance_yaw", odom_covariance_config_.pose_yaw);
+    this->get_parameter("odom_twist_covariance_linear_x", odom_covariance_config_.twist_linear_x);
+    this->get_parameter("odom_twist_covariance_linear_y", odom_covariance_config_.twist_linear_y);
+    this->get_parameter("odom_twist_covariance_linear_z", odom_covariance_config_.twist_linear_z);
+    this->get_parameter("odom_twist_covariance_angular_x", odom_covariance_config_.twist_angular_x);
+    this->get_parameter("odom_twist_covariance_angular_y", odom_covariance_config_.twist_angular_y);
+    this->get_parameter("odom_twist_covariance_angular_z", odom_covariance_config_.twist_angular_z);
+    this->get_parameter("serial_read_timeout_ms", serial_read_timeout_ms_);
+    this->get_parameter("serial_write_timeout_ms", serial_write_timeout_ms_);
+    this->get_parameter("serial_transaction_timeout_ms", serial_transaction_timeout_ms_);
+    this->get_parameter("serial_max_response_bytes", serial_max_response_bytes_);
+    this->get_parameter("serial_reconnect_interval_s", serial_reconnect_interval_s_);
+    this->get_parameter("encoder_poll_period_ms", encoder_poll_period_ms_);
+    this->get_parameter("require_fresh_command_after_reconnect", require_fresh_command_after_reconnect_);
 
-    
-
-    
+    serial_read_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_read_timeout_ms", serial_read_timeout_ms_, 50);
+    serial_write_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_write_timeout_ms", serial_write_timeout_ms_, 50);
+    serial_transaction_timeout_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_transaction_timeout_ms", serial_transaction_timeout_ms_, 100);
+    serial_max_response_bytes_ = sanitize_positive_int_parameter(
+        this->get_logger(), "serial_max_response_bytes", serial_max_response_bytes_, 256);
+    serial_reconnect_interval_s_ = sanitize_positive_double_parameter(
+        this->get_logger(), "serial_reconnect_interval_s", serial_reconnect_interval_s_, 1.0);
+    encoder_poll_period_ms_ = sanitize_positive_int_parameter(
+        this->get_logger(), "encoder_poll_period_ms", encoder_poll_period_ms_, 50);
 }
-
-void Roboteq::connect(){
-    RCLCPP_INFO_STREAM(this->get_logger(),"Opening serial port on " << port << " at " << baud << "..." );
-    try
-    {
-        controller.open();
-        if (controller.isOpen())
-        {
-            RCLCPP_INFO(this->get_logger(), "Successfully opened serial port");
-            return; 
-            
-        }
-    }
-    catch (serial::IOException &e)
-    {
-        RCLCPP_WARN_STREAM(this->get_logger(), "serial::IOException: ");
-        throw;
-    }
-    RCLCPP_WARN(this->get_logger(),"Failed to open serial port");
-    sleep(5);
-
-}
-
 
 void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_msg)
 {
+    if (!serial_worker_) {
+        RCLCPP_ERROR(this->get_logger(), "Rejected cmd_vel because serial worker is not running");
+        return;
+    }
+
     if (!std::isfinite(twist_msg->linear.x) || !std::isfinite(twist_msg->angular.z)) {
         RCLCPP_ERROR(this->get_logger(), "Rejected non-finite cmd_vel command");
-        send_stop_command("non-finite cmd_vel");
+        serial_worker_->submitCommand(0.0, 0.0);
         return;
     }
 
@@ -214,255 +318,54 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     received_first_cmd_ = true;
     command_timeout_logged_ = false;
 
-    // wheel speed (m/s)
-    // ROS convention: positive angular.z = left turn.
-    // Hardware-specific correction: this robot's physical turn direction is inverted,
-    // so we invert only the angular component here.
-    const double linear_x = twist_msg->linear.x;
-    const double angular_z = kCommandAngularSign * twist_msg->angular.z;
-
-    const double left_speed = linear_x - (wheelbase * angular_z / 2.0);
-
-    const double right_speed = linear_x + (wheelbase * angular_z / 2.0);
+    const auto wheel_speeds = roboteq_ros2_driver::command_conversion::twist_to_wheel_speeds(
+        twist_msg->linear.x,
+        twist_msg->angular.z,
+        wheelbase);
 
     RCLCPP_DEBUG(
         this->get_logger(),
         "CMD_VEL_TO_WHEELS | linear_x=%.3f angular_z=%.3f | left_speed=%.3f right_speed=%.3f",
         twist_msg->linear.x,
         twist_msg->angular.z,
-        left_speed,
-        right_speed
+        wheel_speeds.left_mps,
+        wheel_speeds.right_mps
     );
 
-    //RCLCPP_INFO(this->get_logger(), "Received linear = %0.2f, angular = %0.2f", twist_msg->linear.x, twist_msg->angular.z);
-
-    std::stringstream channel_1_cmd;
-    std::stringstream channel_2_cmd;
-    
-    float channel_1_speed;
-    float channel_2_speed;
-
-    /**************** CHANNEL SWAP ***********************************/
-
-    if(channel_1 == "right" && channel_2 == "left")
-    { // Default
-    
-        channel_1_speed = right_speed;
-        channel_2_speed = left_speed;
-    }
-    else if (channel_1 == "left" && channel_2 == "right")
-    {
-        channel_1_speed = left_speed;
-        channel_2_speed = right_speed;
-    }
-    else
-    {
+    const auto channel_speeds = roboteq_ros2_driver::command_conversion::wheels_to_channels(
+        wheel_speeds,
+        channel_1,
+        channel_2);
+    if (!channel_speeds.has_value()) {
         RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
         return;
     }
-    /**************** CHANNEL SWAP ***********************************/
-
 
     RCLCPP_DEBUG(
         this->get_logger(),
         "WHEELS_TO_CHANNELS | left_speed=%.3f right_speed=%.3f | channel_1=%s %.3f | channel_2=%s %.3f",
-        left_speed,
-        right_speed,
+        wheel_speeds.left_mps,
+        wheel_speeds.right_mps,
         channel_1.c_str(),
-        channel_1_speed,
+        channel_speeds->channel_1_mps,
         channel_2.c_str(),
-        channel_2_speed
+        channel_speeds->channel_2_mps
     );
 
-    if (open_loop)
-    {
-        // motor power (scale 0-1000)
-        RCLCPP_INFO_STREAM(this->get_logger(),"open loop");
-        int32_t channel_1_power = static_cast<int32_t>(
-            channel_1_speed / wheel_circumference * 60.0 / max_rpm * 1000.0);
-        int32_t channel_2_power = static_cast<int32_t>(
-            channel_2_speed / wheel_circumference * 60.0 / max_rpm * 1000.0);
-        channel_1_power = std::clamp(channel_1_power, -1000, 1000);
-        channel_2_power = std::clamp(channel_2_power, -1000, 1000);
-
-        
-        channel_1_cmd << "!G 1 " << channel_1_power << "\r";
-        channel_2_cmd << "!G 2 " << channel_2_power << "\r";
-    }
-    else
-    {
-        // motor speed (rpm)
-        int32_t channel_1_rpm = static_cast<int32_t>(
-            channel_1_speed / wheel_circumference * 60.0);
-        int32_t channel_2_rpm = static_cast<int32_t>(
-            channel_2_speed / wheel_circumference * 60.0);
-        channel_1_rpm = std::clamp(channel_1_rpm, -max_rpm, max_rpm);
-        channel_2_rpm = std::clamp(channel_2_rpm, -max_rpm, max_rpm);
-        
-        channel_1_cmd << "!S 1 " << channel_1_rpm << "\r";
-        channel_2_cmd << "!S 2 " << channel_2_rpm << "\r";
-
-    }
-
-    #ifdef _VERBOSE
-    printf("channel_1_cmd: %s\n", channel_1_cmd.str().c_str());
-    printf("channel_2_cmd: %s\n\n", channel_2_cmd.str().c_str());
-    #endif
-    
-    // send command to motor controller
-
-
-    //write cmd to motor controller
-    //#ifndef _CMDVEL_FORCE_RUN
-    const std::string cmd_1 = channel_1_cmd.str();
-    const std::string cmd_2 = channel_2_cmd.str();
-
-    const size_t bytes_1 = controller.write(cmd_1);
-    const size_t bytes_2 = controller.write(cmd_2);
-    controller.flush();
-
-    std::string cmd_1_print = cmd_1;
-    std::string cmd_2_print = cmd_2;
-
-    if (!cmd_1_print.empty() && cmd_1_print.back() == '\r') {
-        cmd_1_print.pop_back();
-    }
-
-    if (!cmd_2_print.empty() && cmd_2_print.back() == '\r') {
-        cmd_2_print.pop_back();
-    }
-
-    RCLCPP_DEBUG(
-        this->get_logger(),
-        "ROBOTEQ_SERIAL_TX | cmd1='%s' bytes1=%zu | cmd2='%s' bytes2=%zu",
-        cmd_1_print.c_str(),
-        bytes_1,
-        cmd_2_print.c_str(),
-        bytes_2
-    );
-    //#endif
+    serial_worker_->submitCommand(channel_speeds->channel_1_mps, channel_speeds->channel_2_mps);
 }
-
-void Roboteq::send_stop_command(const char * reason)
-{
-    if (!controller.isOpen()) {
-        return;
-    }
-
-    try {
-        controller.write("!G 1 0\r");
-        controller.write("!G 2 0\r");
-        controller.write("!S 1 0\r");
-        controller.write("!S 2 0\r");
-        controller.flush();
-        RCLCPP_WARN(this->get_logger(), "Motor stop command sent: %s", reason);
-    } catch (const std::exception & ex) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to send motor stop command: %s", ex.what());
-    }
-}
-
-void Roboteq::cmdvel_setup()
-{
-    RCLCPP_INFO(this->get_logger(), "configuring motor controller...");
-
-    // stop motors
-    controller.write("!G 1 0\r");
-    controller.write("!G 2 0\r");
-    controller.write("!S 1 0\r");
-    controller.write("!S 2 0\r");
-    controller.flush();
-
-    // disable echo
-    controller.write("^ECHOF 1\r");
-    controller.flush();
-
-    // enable watchdog timer (1000 ms)
-    controller.write("^RWD 1000\r");
-
-    
-
-    // set motor operating mode (1 for closed-loop speed)
-    if (open_loop)
-    {
-        // open-loop speed mode
-        controller.write("^MMOD 1 0\r");
-        controller.write("^MMOD 2 0\r");
-    }
-    else
-    {
-        // closed-loop speed mode
-        controller.write("^MMOD 1 1\r");
-        controller.write("^MMOD 2 1\r");
-    }
-
-    
-    // set motor amps limit (A * 10)
-    std::stringstream right_ampcmd;
-    std::stringstream left_ampcmd;
-    right_ampcmd << "^ALIM 1 " << (int)(max_amps * 10) << "\r";
-    left_ampcmd << "^ALIM 2 " << (int)(max_amps * 10) << "\r";
-    controller.write(right_ampcmd.str());
-    controller.write(left_ampcmd.str());
-
-    // set max speed (rpm) for relative speed commands
-    std::stringstream right_rpmcmd;
-    std::stringstream left_rpmcmd;
-    right_rpmcmd << "^MXRPM 1 " << max_rpm << "\r";
-    left_rpmcmd  << "^MXRPM 2 " << max_rpm << "\r";
-    
-    controller.write(right_rpmcmd.str());
-    controller.write(left_rpmcmd.str());
-
-    // set max acceleration rate (2000 rpm/s * 10)
-    controller.write("^MAC 1 20000\r");
-    controller.write("^MAC 2 20000\r");
-
-    // set max deceleration rate (2000 rpm/s * 10)
-    controller.write("^MDEC 1 20000\r");
-    controller.write("^MDEC 2 20000\r");
-
-    
-    
-    
-    // set PID parameters (gain * 10)
-    controller.write("^KP 1 1\r");
-    controller.write("^KP 2 1\r");
-    controller.write("^KI 1 7\r");
-    controller.write("^KI 2 7\r");
-    controller.write("^KD 1 0\r");
-    controller.write("^KD 2 0\r");
-    
-    
-    // set encoder mode (18 for feedback on motor1, 34 for feedback on motor2)
-    //controller.write("^EMOD 1 18\r");
-    //controller.write("^EMOD 2 34\r");
-    
-    
-    // set encoder counts (ppr)
-    std::stringstream right_enccmd;
-    std::stringstream left_enccmd;
-
-    right_enccmd << "^EPPR 1 " << encoder_ppr << "\r";
-    left_enccmd << "^EPPR 2 " << encoder_ppr << "\r";
-    
-    controller.write(right_enccmd.str());
-    controller.write(left_enccmd.str());
-
-    controller.flush();
-}
-
-void Roboteq::cmdvel_loop()
-{
-}
-
 
 void Roboteq::odom_setup()
 {
     RCLCPP_INFO(this->get_logger(),"setting up odom...");
     if (pub_odom_tf)
     {
-        //TODO: implement tf2 broadcaster
-        
+        odom_tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Dynamic odom TF enabled: %s -> %s",
+            odom_frame.c_str(),
+            base_frame.c_str());
     }
 
     // maybe use this-> instead of
@@ -473,45 +376,16 @@ void Roboteq::odom_setup()
     odom_msg.header.frame_id = odom_frame;
     odom_msg.child_frame_id = base_frame;
 
-    // Set up the pose covariance
-    for (size_t i = 0; i < 36; i++)
-    {
-        odom_msg.pose.covariance[i] = 0;
-        odom_msg.twist.covariance[i] = 0;
-    }
-
-    odom_msg.pose.covariance[7] = 0.001;
-    odom_msg.pose.covariance[14] = 1000000;
-    odom_msg.pose.covariance[21] = 1000000;
-    odom_msg.pose.covariance[28] = 1000000;
-    odom_msg.pose.covariance[35] = 1000;
-
-    // Set up the twist covariance
-    odom_msg.twist.covariance[0] = 0.001;
-    odom_msg.twist.covariance[7] = 0.001;
-    odom_msg.twist.covariance[14] = 1000000;
-    odom_msg.twist.covariance[21] = 1000000;
-    odom_msg.twist.covariance[28] = 1000000;
-    odom_msg.twist.covariance[35] = 1000;
-
-    // Set up the transform message: move to odom_publish
-    /*
-    tf2::Quaternion q;
-    q.setRPY(0, 0, odom_yaw);
-
-    tf_msg.transform.translation.x = x;
-    tf_msg.transform.translation.y = y;
-    tf_msg.transform.translation.z = 0.0;
-    tf_msg.transform.rotation.x = q.x();
-    tf_msg.transform.rotation.y = q.y();
-    tf_msg.transform.rotation.z = q.z();
-    tf_msg.transform.rotation.w = q.w();
-    */
+    const auto covariance_config =
+        sanitize_covariance_config_with_logging(this->get_logger(), odom_covariance_config_);
+    odom_msg.pose.covariance =
+        roboteq_ros2_driver::odom_covariance::build_pose_covariance(covariance_config);
+    odom_msg.twist.covariance =
+        roboteq_ros2_driver::odom_covariance::build_twist_covariance(covariance_config);
 
     // start encoder streaming
     RCLCPP_INFO_STREAM(this->get_logger(),"covariance set");
-    RCLCPP_INFO_STREAM(this->get_logger(),"odometry stream starting...");
-    odom_stream();
+    RCLCPP_INFO_STREAM(this->get_logger(),"odometry polling will be handled by serial worker");
     
     odom_last_time = millis();
 #ifdef _ODOM_SENSORS
@@ -522,68 +396,17 @@ void Roboteq::odom_setup()
 // Odom msg streams
 
 
-void Roboteq::odom_stream()
-{
-
-#ifdef _ODOM_SENSORS
-    // start encoder and current output (30 hz)
-    // doubling frequency since one value is output at each cycle
-    //  controller.write("# C_?CR_?BA_# 17\r");
-    // start encoder, current and voltage output (30 hz)
-    // tripling frequency since one value is output at each cycle
-    controller.write("# C_?CR_?BA_?V_# 11\r");
-#else
-    //  start encoder output (10 hz)
-    //  controller.write("# C_?CR_# 100\r");
-    // start encoder output (30 hz)
-    //controller.write("# C_?CR_# 33\r");
-    RCLCPP_INFO(this->get_logger(), "Encoder polling mode enabled");
-
-#endif
-    controller.flush();
-}
-
-std::vector<int> Roboteq::readEncoderCountRelative()
-{
-    // Send encoder query to the controller
-    controller.flushInput();
-    controller.write("?CR\r");
-    controller.flush();
-    std::this_thread::sleep_for(std::chrono::milliseconds(kSerialReadDelayMs));
-    std::vector<int> output;
-    std::string result;
-
-
-
-
-    char ch = 0;
-    std::string buffer;
-    while (controller.available())
-    {
-        if (controller.read((uint8_t *)&ch, 1) == 0)
-            break;
-        if (ch == '\r')
-            break;
-        buffer += ch;
-    }
-    result = buffer;
-
-    const auto encoder_counts = roboteq_ros2_driver::protocol::parse_encoder_counts(result);
-    if (encoder_counts.has_value()) {
-        output.push_back(encoder_counts->first);
-        output.push_back(encoder_counts->second);
-    } else {
-        output.push_back(INT_MAX);
-        output.push_back(INT_MAX);
-    }
-    return output;
-}
-
 void Roboteq::odom_loop()
 {
-    std::vector<int> encoders = readEncoderCountRelative();
-    
-    
+    if (!serial_worker_) {
+        return;
+    }
+
+    const auto sample = serial_worker_->takeLatestEncoderSample();
+    if (!sample.has_value() || !sample->valid) {
+        return;
+    }
+
     
     //uint32_t nowtime = millis();
     
@@ -595,42 +418,19 @@ void Roboteq::odom_loop()
     
     //RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
     
-    // encoders[0] = right, encoders[1] = left (or vice versa, depending on your config)
-    // Use encoders for odometry update, e.g.:
-    // ch1_odom_encoder = encoders[0];
-    // if we haven't received encoder counts in some time then restart streaming
-    ch1_odom_encoder =  encoders[0];
-    ch2_odom_encoder =  encoders[1];
-
-    if (ch1_odom_encoder == INT_MAX || ch2_odom_encoder == INT_MAX)
-    {
-        //RCLCPP_WARN(this->get_logger(), "No encoder data received, restarting odometry stream");
-        //odom_stream();
-        return; // early return if no encoders read
-    }
-
-    ch2_odom_encoder *=-1;
-    ch1_odom_encoder *=-1;
-
-        // *******************************************************
-    if (channel_1 == "right" && channel_2 == "left")
-    {
-        odom_encoder_right = ch1_odom_encoder;
-        odom_encoder_left  = ch2_odom_encoder;
-    }
-    else if (channel_1 == "left" && channel_2 == "right")
-    {
-        odom_encoder_right = ch2_odom_encoder;
-        odom_encoder_left  = ch1_odom_encoder;
-    }
-    else
-    {
+    const auto integration = odometry_integrator_.integrate_channel_sample(
+        sample->channel_1,
+        sample->channel_2,
+        dt,
+        channel_1,
+        channel_2);
+    if (!integration.has_value()) {
         RCLCPP_WARN(this->get_logger(), "Invalid channel configuration");
         return;
     }
 
-    publish_ticks(odom_encoder_left, odom_encoder_right);
-    odom_publish(odom_encoder_left, odom_encoder_right);
+    publish_ticks(integration->ticks.left_ticks, integration->ticks.right_ticks);
+    odom_publish(*integration);
     
     return ; // early return if no encoders read
 }
@@ -654,32 +454,18 @@ void Roboteq::publish_ticks(int left_ticks,int right_ticks)
 
 
 
-void Roboteq::odom_publish(int left_ticks, int right_ticks)
+void Roboteq::odom_publish(const roboteq_ros2_driver::odometry::IntegrationResult & integration)
 {
 
-    RobotDisplacement twist = differential_drive_kinematics_.calculateForwardKinematics(left_ticks, right_ticks);
+    odom_x = integration.pose.x;
+    odom_y = integration.pose.y;
+    odom_yaw = integration.pose.theta;
 
-    current_pose = differential_drive_kinematics_.updateRobotPose(current_pose, twist);
-
-
-    odom_x = current_pose.x;
-    odom_y = current_pose.y;
-    odom_yaw = current_pose.theta;
-
-    odom_last_x = odom_x;
-    odom_last_y = odom_y;
-    odom_last_yaw = odom_yaw;
     // convert yaw to quat;
     tf2::Quaternion tf2_quat;
     tf2_quat.setRPY(0, 0, odom_yaw);
     // Convert tf2::Quaternion to geometry_msgs::msg::Quaternion
     geometry_msgs::msg::Quaternion quat = tf2::toMsg(tf2_quat);
-
-
-
-    //tf2::Quaternion quat = tf2::createQuaternionMsgFromYaw(odom_yaw);
-    // TODO: set up tf2_ros
-    //update odom msg
 
     //odom_msg.header.seq++; //? not used in ros2 ?
     odom_msg.header.stamp = this->get_clock()->now();
@@ -687,45 +473,78 @@ void Roboteq::odom_publish(int left_ticks, int right_ticks)
     odom_msg.pose.pose.position.y = odom_y;
     odom_msg.pose.pose.position.z = 0.0;
     odom_msg.pose.pose.orientation = quat;
-    odom_msg.twist.twist.linear.x = 0.0; // linear velocity in x
+    odom_msg.twist.twist.linear.x = integration.twist.linear_x;
     odom_msg.twist.twist.linear.y = 0.0;
     odom_msg.twist.twist.linear.z = 0.0;
     odom_msg.twist.twist.angular.x = 0.0;
     odom_msg.twist.twist.angular.y = 0.0;
-    odom_msg.twist.twist.angular.z = 0.0;
+    odom_msg.twist.twist.angular.z = integration.twist.angular_z;
+    if (odom_tf_broadcaster_) {
+        odom_tf_broadcaster_->sendTransform(
+            roboteq_ros2_driver::odom_tf::build_odom_to_base_transform(
+                odom_frame,
+                base_frame,
+                odom_msg.header.stamp,
+                odom_x,
+                odom_y,
+                odom_yaw));
+    }
     odom_pub->publish(odom_msg);
     // odom_pub.publish(odom_msg); ROS1
 }
 
-int Roboteq::run()
+void Roboteq::command_watchdog_loop()
 {
-    starttime = millis();
-    hstimer = starttime;
-    mstimer = starttime;
-    lstimer = starttime;
-
-    if (received_first_cmd_) {
-        const double command_age_s = (this->now() - last_cmd_time_).seconds();
-        if (std::isfinite(command_age_s) && command_age_s > cmd_timeout_s_) {
-            if (!command_timeout_logged_) {
-                send_stop_command("cmd_vel timeout");
-                command_timeout_logged_ = true;
-            }
-        }
+    const double command_age_s = received_first_cmd_ ?
+        (this->now() - last_cmd_time_).seconds() : 0.0;
+    if (roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
+        received_first_cmd_, command_timeout_logged_, command_age_s, cmd_timeout_s_))
+    {
+        command_timeout_logged_ = true;
+        RCLCPP_WARN(this->get_logger(), "cmd_vel timeout; serial worker will enforce stop");
     }
-
-    odom_loop();
-    return 0;
 }
 
 Roboteq::~Roboteq()
 {
-    if (controller.isOpen()) {
-        send_stop_command("driver shutdown");
-        controller.close();
+    if (serial_worker_) {
+        serial_worker_->stop();
     }
     // rclcpp::shutdown(); // uncomment if node doesnt destroy properly
 
+}
+
+void Roboteq::start_serial_worker()
+{
+    roboteq_ros2_driver::SerialTransportConfig transport_config;
+    transport_config.port = port;
+    transport_config.baud = baud;
+    transport_config.read_timeout = std::chrono::milliseconds(serial_read_timeout_ms_);
+    transport_config.write_timeout = std::chrono::milliseconds(serial_write_timeout_ms_);
+    transport_config.transaction_timeout = std::chrono::milliseconds(serial_transaction_timeout_ms_);
+    transport_config.max_response_bytes = static_cast<std::size_t>(serial_max_response_bytes_);
+
+    roboteq_ros2_driver::SerialWorkerConfig worker_config;
+    worker_config.open_loop = open_loop;
+    worker_config.wheel_circumference = wheel_circumference;
+    worker_config.max_rpm = max_rpm;
+    worker_config.command_timeout = std::chrono::milliseconds(
+        static_cast<int>(std::max(0.001, cmd_timeout_s_) * 1000.0));
+    worker_config.encoder_poll_period = std::chrono::milliseconds(encoder_poll_period_ms_);
+    worker_config.reconnect_interval = std::chrono::milliseconds(
+        static_cast<int>(serial_reconnect_interval_s_ * 1000.0));
+    worker_config.require_fresh_command_after_reconnect = require_fresh_command_after_reconnect_;
+    worker_config.required_settings =
+        roboteq_ros2_driver::configuration::required_controller_settings(
+            open_loop, encoder_ppr, max_amps, max_rpm);
+    worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
+        RCLCPP_WARN(logger, "%s", message.c_str());
+    };
+
+    serial_worker_ = std::make_unique<roboteq_ros2_driver::SerialIoWorker>(
+        std::make_unique<roboteq_ros2_driver::RoboteqSerialTransport>(transport_config),
+        worker_config);
+    serial_worker_->start();
 }
 
 } // end of namespace
@@ -735,7 +554,7 @@ int main(int argc, char* argv[])
 
     rclcpp::init(argc, argv);
     
-    rclcpp::executors::SingleThreadedExecutor exec;
+    rclcpp::executors::MultiThreadedExecutor exec;
     rclcpp::NodeOptions options;
     auto node = std::make_shared<Roboteq::Roboteq>();
     exec.add_node(node);

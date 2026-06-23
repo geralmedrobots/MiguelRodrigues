@@ -40,25 +40,57 @@ TEST(RoboteqProtocol, ParsesEncoderCounts)
   EXPECT_EQ(negative_zero->second, 0);
 }
 
+TEST(RoboteqProtocol, ParsesConfigReadback)
+{
+  const auto motor_mode = protocol::parse_config_readback("MMOD=1", "MMOD");
+
+  ASSERT_TRUE(motor_mode.has_value());
+  EXPECT_EQ(*motor_mode, 1);
+
+  const auto encoder_ppr = protocol::parse_config_readback("EPPR=-1024\r\n", "EPPR");
+  ASSERT_TRUE(encoder_ppr.has_value());
+  EXPECT_EQ(*encoder_ppr, -1024);
+}
+
 TEST(RoboteqProtocol, AcceptsLineTerminatedResponses)
 {
   EXPECT_EQ(protocol::parse_firmware_id("FID=firmware\r").value(), "firmware");
   EXPECT_TRUE(protocol::parse_voltage_fields("V=1:2:3\n").has_value());
   EXPECT_TRUE(protocol::parse_encoder_counts("CR=4:5\r\n").has_value());
+  EXPECT_TRUE(protocol::parse_config_readback("MXRPM=100\r", "MXRPM").has_value());
 }
 
 TEST(RoboteqProtocol, RejectsMalformedResponses)
 {
   EXPECT_FALSE(protocol::parse_firmware_id("").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("+").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("-").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id("?FID").has_value());
+  EXPECT_FALSE(protocol::parse_firmware_id(" FID=firmware").has_value());
   EXPECT_FALSE(protocol::parse_firmware_id("FID=").has_value());
   EXPECT_FALSE(protocol::parse_firmware_id("ID=firmware").has_value());
   EXPECT_FALSE(protocol::parse_voltage_fields("V=").has_value());
+  EXPECT_FALSE(protocol::parse_voltage_fields(" V=1:2:3").has_value());
+  EXPECT_FALSE(protocol::parse_voltage_fields("V=1:2:3 ").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=123").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=:456").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("C=123:456").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:456:789").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts(" CR=123:456").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("CR=123:456 ").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("?CR").has_value());
+  EXPECT_FALSE(protocol::parse_encoder_counts("-").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback(" MMOD=1", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1 ", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1", "").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MXRPM=100", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("~MMOD 1", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1:1", "MMOD").has_value());
 }
 
 TEST(RoboteqProtocol, RejectsInvalidNumericFields)
@@ -74,6 +106,10 @@ TEST(RoboteqProtocol, RejectsInvalidNumericFields)
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=12:34y").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=1.2:3").has_value());
   EXPECT_FALSE(protocol::parse_encoder_counts("CR=999999999999999999999:34").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=open", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1x", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=1.0", "MMOD").has_value());
+  EXPECT_FALSE(protocol::parse_config_readback("MMOD=999999999999999999999", "MMOD").has_value());
 }
 
 TEST(RoboteqProtocol, ParsesIntegerLimits)

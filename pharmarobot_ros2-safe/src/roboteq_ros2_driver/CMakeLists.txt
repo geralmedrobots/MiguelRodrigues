@@ -20,6 +20,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -50,6 +51,108 @@ target_include_directories(roboteq_protocol PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+add_library(roboteq_command_watchdog
+  src/command_watchdog.cpp
+)
+
+target_include_directories(roboteq_command_watchdog PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_odom_tf
+  src/odom_tf.cpp
+)
+
+target_include_directories(roboteq_odom_tf PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(roboteq_odom_tf
+  builtin_interfaces
+  geometry_msgs
+  tf2
+)
+
+add_library(roboteq_odom_covariance
+  src/odom_covariance.cpp
+)
+
+target_include_directories(roboteq_odom_covariance PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_odom_twist
+  src/odom_twist.cpp
+)
+
+target_include_directories(roboteq_odom_twist PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_command_scaling
+  src/command_scaling.cpp
+)
+
+target_include_directories(roboteq_command_scaling PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_command_conversion
+  src/roboteq_command_conversion.cpp
+)
+
+target_include_directories(roboteq_command_conversion PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_configuration
+  src/roboteq_configuration.cpp
+)
+
+target_include_directories(roboteq_configuration PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(roboteq_serial_transport
+  src/roboteq_serial_transport.cpp
+)
+
+target_include_directories(roboteq_serial_transport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(roboteq_serial_transport
+  serial
+)
+
+add_library(roboteq_serial_worker
+  src/roboteq_serial_worker.cpp
+)
+
+target_include_directories(roboteq_serial_worker PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(roboteq_serial_worker
+  roboteq_command_scaling
+  roboteq_configuration
+  roboteq_protocol
+  roboteq_serial_transport
+)
+
+ament_target_dependencies(roboteq_serial_worker
+  serial
+)
+
 add_library(differential_drive_kinematics
   src/differential_drive_kinematics/differential_drive_kinematics.cpp
 )
@@ -63,6 +166,21 @@ ament_target_dependencies(differential_drive_kinematics
   rclcpp
 )
 
+add_library(roboteq_odometry
+  src/roboteq_odometry.cpp
+)
+
+target_include_directories(roboteq_odometry PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/differential_drive_kinematics>
+  $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(roboteq_odometry
+  differential_drive_kinematics
+  roboteq_odom_twist
+)
+
 # ---------------------------------------------------------------------------
 # Main node executable
 # ---------------------------------------------------------------------------
@@ -72,7 +190,17 @@ add_executable(${PROJECT_NAME}_node
 
 target_link_libraries(${PROJECT_NAME}_node
   differential_drive_kinematics
+  roboteq_command_watchdog
+  roboteq_command_conversion
+  roboteq_command_scaling
+  roboteq_configuration
+  roboteq_odometry
+  roboteq_odom_covariance
+  roboteq_odom_tf
+  roboteq_odom_twist
   roboteq_protocol
+  roboteq_serial_transport
+  roboteq_serial_worker
 )
 
 ament_target_dependencies(${PROJECT_NAME}_node
@@ -82,6 +210,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   sensor_msgs
   nav_msgs
   geometry_msgs
+  builtin_interfaces
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -119,6 +248,16 @@ ament_export_dependencies(
 # ---------------------------------------------------------------------------
 install(TARGETS
   roboteq_protocol
+  roboteq_command_watchdog
+  roboteq_command_conversion
+  roboteq_command_scaling
+  roboteq_configuration
+  roboteq_odometry
+  roboteq_odom_covariance
+  roboteq_odom_tf
+  roboteq_odom_twist
+  roboteq_serial_transport
+  roboteq_serial_worker
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -136,6 +275,11 @@ install(DIRECTORY include/
   DESTINATION include/
 )
 
+install(FILES
+  src/differential_drive_kinematics/differential_drive_kinematics.hpp
+  DESTINATION include
+)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -149,6 +293,94 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_roboteq_protocol
     roboteq_protocol
+  )
+
+  ament_add_gtest(test_command_watchdog
+    test/test_command_watchdog.cpp
+  )
+
+  target_link_libraries(test_command_watchdog
+    roboteq_command_watchdog
+  )
+
+  ament_add_gtest(test_odom_tf
+    test/test_odom_tf.cpp
+  )
+
+  target_link_libraries(test_odom_tf
+    roboteq_odom_tf
+  )
+
+  ament_add_gtest(test_odom_covariance
+    test/test_odom_covariance.cpp
+  )
+
+  target_link_libraries(test_odom_covariance
+    roboteq_odom_covariance
+  )
+
+  ament_add_gtest(test_odom_twist
+    test/test_odom_twist.cpp
+  )
+
+  target_link_libraries(test_odom_twist
+    roboteq_odom_twist
+  )
+
+  ament_add_gtest(test_command_scaling
+    test/test_command_scaling.cpp
+  )
+
+  target_link_libraries(test_command_scaling
+    roboteq_command_scaling
+  )
+
+  ament_add_gtest(test_command_conversion
+    test/test_command_conversion.cpp
+  )
+
+  target_link_libraries(test_command_conversion
+    roboteq_command_conversion
+  )
+
+  ament_add_gtest(test_roboteq_configuration
+    test/test_roboteq_configuration.cpp
+  )
+
+  target_link_libraries(test_roboteq_configuration
+    roboteq_configuration
+  )
+
+  ament_add_gtest(test_roboteq_odometry
+    test/test_roboteq_odometry.cpp
+  )
+
+  target_link_libraries(test_roboteq_odometry
+    roboteq_odometry
+  )
+
+  ament_add_gtest(test_serial_worker
+    test/test_serial_worker.cpp
+  )
+
+  target_link_libraries(test_serial_worker
+    roboteq_serial_worker
+  )
+
+  ament_target_dependencies(test_serial_worker
+    serial
+  )
+
+  ament_add_gtest(test_serial_transport
+    test/test_serial_transport.cpp
+  )
+
+  target_link_libraries(test_serial_transport
+    roboteq_serial_transport
+  )
+
+  ament_target_dependencies(test_serial_transport
+    serial
   )
 
   ament_lint_auto_find_test_dependencies()

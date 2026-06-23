@@ -1,0 +1,48 @@
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
+
+#include <gtest/gtest.h>
+
+namespace conversion = roboteq_ros2_driver::command_conversion;
+
+TEST(CommandConversion, ConvertsForwardCommandToEqualWheelSpeeds)
+{
+  const auto wheels = conversion::twist_to_wheel_speeds(0.4, 0.0, 0.453);
+
+  EXPECT_DOUBLE_EQ(wheels.left_mps, 0.4);
+  EXPECT_DOUBLE_EQ(wheels.right_mps, 0.4);
+}
+
+TEST(CommandConversion, PreservesReverseSteeringConvention)
+{
+  const auto wheels = conversion::twist_to_wheel_speeds(0.0, 1.0, 0.4);
+
+  EXPECT_DOUBLE_EQ(wheels.left_mps, 0.2);
+  EXPECT_DOUBLE_EQ(wheels.right_mps, -0.2);
+}
+
+TEST(CommandConversion, MapsDefaultChannelsRightThenLeft)
+{
+  const conversion::WheelSpeeds wheels{1.0, 2.0};
+  const auto channels = conversion::wheels_to_channels(wheels, "right", "left");
+
+  ASSERT_TRUE(channels.has_value());
+  EXPECT_DOUBLE_EQ(channels->channel_1_mps, 2.0);
+  EXPECT_DOUBLE_EQ(channels->channel_2_mps, 1.0);
+}
+
+TEST(CommandConversion, MapsSwappedChannelsLeftThenRight)
+{
+  const conversion::WheelSpeeds wheels{1.0, 2.0};
+  const auto channels = conversion::wheels_to_channels(wheels, "left", "right");
+
+  ASSERT_TRUE(channels.has_value());
+  EXPECT_DOUBLE_EQ(channels->channel_1_mps, 1.0);
+  EXPECT_DOUBLE_EQ(channels->channel_2_mps, 2.0);
+}
+
+TEST(CommandConversion, RejectsInvalidChannelMapping)
+{
+  const conversion::WheelSpeeds wheels{1.0, 2.0};
+
+  EXPECT_FALSE(conversion::wheels_to_channels(wheels, "right", "right").has_value());
+}
