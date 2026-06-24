@@ -34,6 +34,7 @@ validation::DriverParameters valid_parameters()
     256,
     1.0,
     50,
+    1.0,
     "right",
     "left",
   };

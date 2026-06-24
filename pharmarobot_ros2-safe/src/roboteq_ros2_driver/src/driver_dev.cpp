@@ -5,6 +5,7 @@
 #include "roboteq_ros2_driver/odom_tf.hpp"
 #include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
 #include "roboteq_ros2_driver/roboteq_configuration.hpp"
+#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 
@@ -165,6 +166,9 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     serial_max_response_bytes_ = this->declare_parameter("serial_max_response_bytes", 256);
     serial_reconnect_interval_s_ = this->declare_parameter("serial_reconnect_interval_s", 1.0);
     encoder_poll_period_ms_ = this->declare_parameter("encoder_poll_period_ms", 50);
+    diagnostics_publish_rate_hz_ = this->declare_parameter("diagnostics_publish_rate_hz", 1.0);
+    encoder_freshness_warn_s_ = this->declare_parameter("encoder_freshness_warn_s", 0.25);
+    encoder_freshness_error_s_ = this->declare_parameter("encoder_freshness_error_s", 1.0);
     require_fresh_command_after_reconnect_ =
         this->declare_parameter("require_fresh_command_after_reconnect", true);
 
@@ -204,6 +208,7 @@ void Roboteq::initialize_valid_configuration()
 //
     odom_pub = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, 100);
     ticks_publisher_ = this->create_publisher<roboteq_ros2_driver::msg::WheelTicks>("wheel_ticks", 100);
+    diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
 
 //
 // cmd_vel subscriber
@@ -227,6 +232,11 @@ void Roboteq::initialize_valid_configuration()
     odom_timer_ = this->create_wall_timer(
         ROBOTEQ_CYCLE_PERIOD,
         std::bind(&Roboteq::odom_loop, this),
+        feedback_callback_group_);
+    diagnostics_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(
+            static_cast<int>(std::max(1.0, 1000.0 / std::max(0.001, diagnostics_publish_rate_hz_)))),
+        std::bind(&Roboteq::diagnostics_loop, this),
         feedback_callback_group_);
     start_serial_worker();
     // enable modifying params at run-time
@@ -285,6 +295,9 @@ void Roboteq::update_parameters()
     this->get_parameter("serial_max_response_bytes", serial_max_response_bytes_);
     this->get_parameter("serial_reconnect_interval_s", serial_reconnect_interval_s_);
     this->get_parameter("encoder_poll_period_ms", encoder_poll_period_ms_);
+    this->get_parameter("diagnostics_publish_rate_hz", diagnostics_publish_rate_hz_);
+    this->get_parameter("encoder_freshness_warn_s", encoder_freshness_warn_s_);
+    this->get_parameter("encoder_freshness_error_s", encoder_freshness_error_s_);
     this->get_parameter("require_fresh_command_after_reconnect", require_fresh_command_after_reconnect_);
 
 }
@@ -314,6 +327,7 @@ Roboteq::validation_parameters() const
         serial_max_response_bytes_,
         serial_reconnect_interval_s_,
         encoder_poll_period_ms_,
+        diagnostics_publish_rate_hz_,
         channel_1,
         channel_2,
     };
@@ -532,6 +546,49 @@ void Roboteq::command_watchdog_loop()
         command_timeout_logged_ = true;
         RCLCPP_WARN(this->get_logger(), "cmd_vel timeout; serial worker will enforce stop");
     }
+}
+
+void Roboteq::diagnostics_loop()
+{
+    if (!diagnostics_pub_ || !serial_worker_) {
+        return;
+    }
+
+    const auto worker_status = serial_worker_->status();
+    roboteq_ros2_driver::DiagnosticsState state;
+    state.serial_connected = worker_status.transport_open;
+    state.serial_ready = worker_status.ready_for_motion;
+    state.command_active = received_first_cmd_;
+    state.command_timed_out = received_first_cmd_ &&
+        (this->now() - last_cmd_time_).seconds() >= cmd_timeout_s_;
+    state.command_timeout_logged = command_timeout_logged_;
+    state.encoder_sample_available = worker_status.have_encoder_sample;
+    state.worker_status = worker_status;
+    if (worker_status.have_encoder_sample) {
+        const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - worker_status.latest_encoder_timestamp);
+        state.encoder_age = age;
+    }
+    if (received_first_cmd_) {
+        state.command_age = std::chrono::milliseconds(
+            static_cast<int>((this->now() - last_cmd_time_).seconds() * 1000.0));
+    }
+
+    roboteq_ros2_driver::DiagnosticsConfig config;
+    config.publish_period = std::chrono::milliseconds(
+        static_cast<int>(std::max(1.0, 1000.0 / std::max(0.001, diagnostics_publish_rate_hz_))));
+    config.encoder_freshness_warn = std::chrono::milliseconds(
+        static_cast<int>(std::max(1.0, encoder_freshness_warn_s_ * 1000.0)));
+    config.encoder_freshness_error = std::chrono::milliseconds(
+        static_cast<int>(std::max(
+            static_cast<double>(config.encoder_freshness_warn.count() + 1),
+            encoder_freshness_error_s_ * 1000.0)));
+
+    const auto msg = roboteq_ros2_driver::buildDiagnosticsArray(this->now(), state, config);
+    if (!diagnostics_state_.shouldPublish(msg)) {
+        return;
+    }
+    diagnostics_pub_->publish(msg);
 }
 
 Roboteq::~Roboteq()

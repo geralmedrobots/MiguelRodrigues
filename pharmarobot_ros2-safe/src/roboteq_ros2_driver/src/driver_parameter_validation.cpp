@@ -152,6 +152,11 @@ std::optional<ValidationError> validate(const DriverParameters & p)
   if (const auto error = positive_int("encoder_poll_period_ms", p.encoder_poll_period_ms)) {
     return error;
   }
+  if (const auto error = positive_finite(
+      "diagnostics_publish_rate_hz", p.diagnostics_publish_rate_hz))
+  {
+    return error;
+  }
   if (!is_channel_name(p.channel_1)) {
     return ValidationError{"channel_1", "must be exactly 'left' or 'right'"};
   }

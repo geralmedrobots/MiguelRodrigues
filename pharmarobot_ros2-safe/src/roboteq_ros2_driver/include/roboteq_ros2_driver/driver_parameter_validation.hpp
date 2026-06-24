@@ -33,6 +33,7 @@ struct DriverParameters
   int serial_max_response_bytes{0};
   double serial_reconnect_interval_s{0.0};
   int encoder_poll_period_ms{0};
+  double diagnostics_publish_rate_hz{0.0};
   std::string channel_1;
   std::string channel_2;
 };

@@ -16,6 +16,7 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -115,6 +116,21 @@ add_library(roboteq_configuration
   src/roboteq_configuration.cpp
 )
 
+add_library(roboteq_diagnostics
+  src/roboteq_diagnostics.cpp
+)
+
+target_include_directories(roboteq_diagnostics PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(roboteq_diagnostics
+  diagnostic_msgs
+  rclcpp
+  serial
+)
+
 target_include_directories(roboteq_configuration PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -204,6 +220,7 @@ target_link_libraries(${PROJECT_NAME}_node
   roboteq_command_scaling
   roboteq_configuration
   roboteq_driver_parameter_validation
+  roboteq_diagnostics
   roboteq_odometry
   roboteq_odom_covariance
   roboteq_odom_tf
@@ -215,6 +232,7 @@ target_link_libraries(${PROJECT_NAME}_node
 
 ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp
+  diagnostic_msgs
   serial
   std_msgs
   sensor_msgs
@@ -262,6 +280,7 @@ install(TARGETS
   roboteq_command_conversion
   roboteq_command_scaling
   roboteq_configuration
+  roboteq_diagnostics
   roboteq_driver_parameter_validation
   roboteq_odometry
   roboteq_odom_covariance
@@ -360,6 +379,13 @@ if(BUILD_TESTING)
 
   target_link_libraries(test_roboteq_configuration
     roboteq_configuration
+  )
+
+  ament_add_gtest(test_roboteq_diagnostics
+    test/test_roboteq_diagnostics.cpp
+  )
+  target_link_libraries(test_roboteq_diagnostics
+    roboteq_diagnostics
   )
 
   ament_add_gtest(test_roboteq_odometry

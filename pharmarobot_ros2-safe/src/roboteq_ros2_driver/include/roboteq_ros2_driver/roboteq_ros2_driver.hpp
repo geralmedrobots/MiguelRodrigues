@@ -12,6 +12,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -29,6 +30,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
+#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
 #include "roboteq_ros2_driver/roboteq_odometry.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
@@ -96,6 +98,9 @@ class Roboteq : public rclcpp::Node
   double serial_reconnect_interval_s_{1.0};
   int encoder_poll_period_ms_{50};
   bool require_fresh_command_after_reconnect_{true};
+  double diagnostics_publish_rate_hz_{1.0};
+  double encoder_freshness_warn_s_{0.25};
+  double encoder_freshness_error_s_{1.0};
   roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig odom_covariance_config_{};
   // Test different odom msg memory
   //nav_msgs::msg::Odometry odom_msg{};
@@ -121,6 +126,7 @@ class Roboteq : public rclcpp::Node
   roboteq_ros2_driver::parameter_validation::DriverParameters validation_parameters() const;
   void initialize_valid_configuration();
   void command_watchdog_loop();
+  void diagnostics_loop();
   void start_serial_worker();
 
   //subscriber
@@ -129,7 +135,10 @@ class Roboteq : public rclcpp::Node
   //publisher
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Publisher<roboteq_ros2_driver::msg::WheelTicks>::SharedPtr ticks_publisher_;
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> odom_tf_broadcaster_;
+  rclcpp::TimerBase::SharedPtr diagnostics_timer_;
+  roboteq_ros2_driver::DiagnosticsPublisherState diagnostics_state_;
 
 
 };

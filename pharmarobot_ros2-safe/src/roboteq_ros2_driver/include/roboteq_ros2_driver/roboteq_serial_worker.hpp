@@ -37,6 +37,29 @@ struct EncoderSample
   bool valid{false};
 };
 
+enum class SerialConnectionState
+{
+  disconnected,
+  connecting,
+  configuring,
+  waiting_for_fresh_command,
+  ready,
+  unhealthy,
+  reconnecting,
+};
+
+struct SerialWorkerStatus
+{
+  SerialConnectionState connection_state{SerialConnectionState::disconnected};
+  bool transport_open{false};
+  bool ready_for_motion{false};
+  bool have_encoder_sample{false};
+  bool require_fresh_command_after_reconnect{true};
+  std::chrono::steady_clock::time_point latest_encoder_timestamp{};
+  uint64_t latest_encoder_sequence{0};
+  uint64_t command_sequence{0};
+};
+
 struct SerialWorkerConfig
 {
   bool open_loop{false};
@@ -68,19 +91,9 @@ public:
   std::optional<EncoderSample> takeLatestEncoderSample();
   uint64_t commandSequence() const;
   bool isReady() const;
+  SerialWorkerStatus status() const;
 
 private:
-  enum class ConnectionState
-  {
-    disconnected,
-    connecting,
-    configuring,
-    waiting_for_fresh_command,
-    ready,
-    unhealthy,
-    reconnecting,
-  };
-
   void run();
   bool connectAndValidate(std::string & error);
   bool sendStop(const char * reason, std::string & error);
@@ -108,8 +121,9 @@ private:
   bool stop_requested_{false};
   bool worker_started_{false};
   std::optional<EncoderSample> latest_encoder_sample_;
+  std::optional<EncoderSample> last_encoder_sample_;
   uint64_t encoder_sequence_{0};
-  ConnectionState state_{ConnectionState::disconnected};
+  SerialConnectionState state_{SerialConnectionState::disconnected};
   std::thread worker_thread_;
 };
 
