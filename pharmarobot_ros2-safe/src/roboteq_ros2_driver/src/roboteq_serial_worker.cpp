@@ -196,6 +196,9 @@ std::optional<EncoderSample> SerialIoWorker::takeLatestEncoderSample()
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   auto sample = latest_encoder_sample_;
+  if (sample.has_value()) {
+    last_encoder_sample_ = sample;
+  }
   latest_encoder_sample_.reset();
   return sample;
 }
@@ -209,7 +212,27 @@ uint64_t SerialIoWorker::commandSequence() const
 bool SerialIoWorker::isReady() const
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
-  return state_ == ConnectionState::ready || state_ == ConnectionState::waiting_for_fresh_command;
+  return state_ == SerialConnectionState::ready ||
+    state_ == SerialConnectionState::waiting_for_fresh_command;
+}
+
+SerialWorkerStatus SerialIoWorker::status() const
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return SerialWorkerStatus{
+    state_,
+    transport_->isOpen(),
+    state_ == SerialConnectionState::ready ||
+      state_ == SerialConnectionState::waiting_for_fresh_command,
+    latest_encoder_sample_.has_value() || last_encoder_sample_.has_value(),
+    config_.require_fresh_command_after_reconnect,
+    latest_encoder_sample_ ? latest_encoder_sample_->timestamp :
+      (last_encoder_sample_ ? last_encoder_sample_->timestamp :
+      std::chrono::steady_clock::time_point{}),
+    latest_encoder_sample_ ? latest_encoder_sample_->sequence :
+      (last_encoder_sample_ ? last_encoder_sample_->sequence : 0),
+    latest_submitted_sequence_,
+  };
 }
 
 void SerialIoWorker::run()
@@ -247,7 +270,7 @@ void SerialIoWorker::run()
         applied_sequence_ = 0;
         applied_stopped_ = true;
         state_ = config_.require_fresh_command_after_reconnect ?
-          ConnectionState::waiting_for_fresh_command : ConnectionState::ready;
+          SerialConnectionState::waiting_for_fresh_command : SerialConnectionState::ready;
       }
       next_encoder_poll = std::chrono::steady_clock::now() + config_.encoder_poll_period;
       next_reconnect = std::chrono::steady_clock::time_point::max();
@@ -291,7 +314,7 @@ void SerialIoWorker::run()
       applied_sequence_ = command.sequence;
       applied_stopped_ =
         std::abs(command.channel_1_mps) < 1e-12 && std::abs(command.channel_2_mps) < 1e-12;
-      state_ = ConnectionState::ready;
+      state_ = SerialConnectionState::ready;
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -327,7 +350,7 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
 {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    state_ = ConnectionState::connecting;
+    state_ = SerialConnectionState::connecting;
   }
   if (config_.log_callback) {
     config_.log_callback("Roboteq serial worker connecting");
@@ -350,7 +373,7 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
   }
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    state_ = ConnectionState::configuring;
+    state_ = SerialConnectionState::configuring;
   }
   if (config_.log_callback) {
     config_.log_callback("Roboteq serial worker configuring and validating controller");
@@ -484,32 +507,32 @@ bool SerialIoWorker::pollEncoder(std::string & error)
 
 void SerialIoWorker::markFailure(const std::string & error)
 {
-  ConnectionState previous_state;
+  SerialConnectionState previous_state;
   const char * previous_state_name = "unknown";
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     previous_state = state_;
   }
   switch (previous_state) {
-    case ConnectionState::disconnected:
+    case SerialConnectionState::disconnected:
       previous_state_name = "disconnected";
       break;
-    case ConnectionState::connecting:
+    case SerialConnectionState::connecting:
       previous_state_name = "connecting";
       break;
-    case ConnectionState::configuring:
+    case SerialConnectionState::configuring:
       previous_state_name = "configuring";
       break;
-    case ConnectionState::waiting_for_fresh_command:
+    case SerialConnectionState::waiting_for_fresh_command:
       previous_state_name = "waiting_for_fresh_command";
       break;
-    case ConnectionState::ready:
+    case SerialConnectionState::ready:
       previous_state_name = "ready";
       break;
-    case ConnectionState::unhealthy:
+    case SerialConnectionState::unhealthy:
       previous_state_name = "unhealthy";
       break;
-    case ConnectionState::reconnecting:
+    case SerialConnectionState::reconnecting:
       previous_state_name = "reconnecting";
       break;
   }
@@ -525,7 +548,7 @@ void SerialIoWorker::markFailure(const std::string & error)
   }
   transport_->close();
   std::lock_guard<std::mutex> lock(state_mutex_);
-  state_ = ConnectionState::unhealthy;
+  state_ = SerialConnectionState::unhealthy;
   applied_stopped_ = true;
   desired_command_.valid = false;
   minimum_motion_sequence_ = latest_submitted_sequence_ + 1;

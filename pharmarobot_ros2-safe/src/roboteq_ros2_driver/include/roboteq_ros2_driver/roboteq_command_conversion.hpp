@@ -24,19 +24,26 @@ struct ChannelSpeeds
 WheelSpeeds twist_to_wheel_speeds(
   double linear_x,
   double angular_z,
-  double wheelbase);
+  double wheelbase,
+  int command_angular_sign = 1);
 
 std::optional<ChannelSpeeds> wheels_to_channels(
   const WheelSpeeds & wheels,
   const std::string & channel_1,
   const std::string & channel_2);
 
+std::optional<ChannelSpeeds> apply_motor_signs(
+  const ChannelSpeeds & channels,
+  int motor_sign_1,
+  int motor_sign_2);
+
 std::optional<ChannelSpeeds> twist_to_channel_speeds(
   double linear_x,
   double angular_z,
   double wheelbase,
   const std::string & channel_1,
-  const std::string & channel_2);
+  const std::string & channel_2,
+  int command_angular_sign = 1);
 
 }  // namespace command_conversion
 }  // namespace roboteq_ros2_driver

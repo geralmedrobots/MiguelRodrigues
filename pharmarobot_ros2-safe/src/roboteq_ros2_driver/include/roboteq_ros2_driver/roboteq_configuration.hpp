@@ -18,7 +18,7 @@ struct RequiredControllerSetting
 
 std::vector<RequiredControllerSetting> required_controller_settings(
   bool open_loop,
-  int encoder_ppr,
+  int encoder_eppr,
   double max_amps,
   int max_rpm);
 

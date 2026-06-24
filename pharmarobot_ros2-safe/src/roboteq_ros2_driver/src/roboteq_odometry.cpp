@@ -1,6 +1,8 @@
 #include "roboteq_ros2_driver/roboteq_odometry.hpp"
 
 #include <climits>
+#include <cstdint>
+#include <limits>
 
 namespace roboteq_ros2_driver
 {
@@ -11,20 +13,36 @@ std::optional<WheelTickDelta> map_channel_encoder_sample_to_wheels(
   int channel_1_ticks,
   int channel_2_ticks,
   const std::string & channel_1,
-  const std::string & channel_2)
+  const std::string & channel_2,
+  int encoder_sign_1,
+  int encoder_sign_2)
 {
-  if (channel_1_ticks == INT_MAX || channel_2_ticks == INT_MAX) {
+  if ((encoder_sign_1 != -1 && encoder_sign_1 != 1) ||
+    (encoder_sign_2 != -1 && encoder_sign_2 != 1) ||
+    channel_1_ticks == INT_MAX || channel_2_ticks == INT_MAX)
+  {
     return std::nullopt;
   }
 
-  const int corrected_channel_1 = -channel_1_ticks;
-  const int corrected_channel_2 = -channel_2_ticks;
+  const int64_t corrected_channel_1 =
+    static_cast<int64_t>(encoder_sign_1) * channel_1_ticks;
+  const int64_t corrected_channel_2 =
+    static_cast<int64_t>(encoder_sign_2) * channel_2_ticks;
+  if (corrected_channel_1 < std::numeric_limits<int>::min() ||
+    corrected_channel_1 > std::numeric_limits<int>::max() ||
+    corrected_channel_2 < std::numeric_limits<int>::min() ||
+    corrected_channel_2 > std::numeric_limits<int>::max())
+  {
+    return std::nullopt;
+  }
 
   if (channel_1 == "right" && channel_2 == "left") {
-    return WheelTickDelta{corrected_channel_2, corrected_channel_1};
+    return WheelTickDelta{
+      static_cast<int>(corrected_channel_2), static_cast<int>(corrected_channel_1)};
   }
   if (channel_1 == "left" && channel_2 == "right") {
-    return WheelTickDelta{corrected_channel_1, corrected_channel_2};
+    return WheelTickDelta{
+      static_cast<int>(corrected_channel_1), static_cast<int>(corrected_channel_2)};
   }
   return std::nullopt;
 }
@@ -44,10 +62,13 @@ std::optional<IntegrationResult> OdometryIntegrator::integrate_channel_sample(
   int channel_2_ticks,
   double dt,
   const std::string & channel_1,
-  const std::string & channel_2)
+  const std::string & channel_2,
+  int encoder_sign_1,
+  int encoder_sign_2)
 {
   const auto ticks = map_channel_encoder_sample_to_wheels(
-    channel_1_ticks, channel_2_ticks, channel_1, channel_2);
+    channel_1_ticks, channel_2_ticks, channel_1, channel_2,
+    encoder_sign_1, encoder_sign_2);
   if (!ticks.has_value()) {
     return std::nullopt;
   }

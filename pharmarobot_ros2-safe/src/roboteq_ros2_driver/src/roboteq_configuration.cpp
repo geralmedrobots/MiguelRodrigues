@@ -7,7 +7,7 @@ namespace configuration
 
 std::vector<RequiredControllerSetting> required_controller_settings(
   bool open_loop,
-  int encoder_ppr,
+  int encoder_eppr,
   double max_amps,
   int max_rpm)
 {
@@ -33,8 +33,8 @@ std::vector<RequiredControllerSetting> required_controller_settings(
     {"KI", 2, 7},
     {"KD", 1, 0},
     {"KD", 2, 0},
-    {"EPPR", 1, encoder_ppr},
-    {"EPPR", 2, encoder_ppr},
+    {"EPPR", 1, encoder_eppr},
+    {"EPPR", 2, encoder_eppr},
   };
 }
 
