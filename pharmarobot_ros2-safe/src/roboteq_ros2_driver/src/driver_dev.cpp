@@ -21,11 +21,12 @@
 #include <string>
 #include <sstream>
 
-#define DELTAT(_nowtime, _thentime) ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
+#define DELTAT(_nowtime, _thentime) \
+    ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
 
 #define _CMDVEL_DEBUG
 
-//#define _VERBOSE
+// #define _VERBOSE
 
 
 // Define following to enable odom debug output
@@ -56,7 +57,8 @@ double sanitize_covariance_parameter(
     double value,
     double fallback)
 {
-    const double sanitized = roboteq_ros2_driver::odom_covariance::sanitize_variance(value, fallback);
+    const double sanitized =
+        roboteq_ros2_driver::odom_covariance::sanitize_variance(value, fallback);
     if (sanitized != value) {
         RCLCPP_WARN(
             logger,
@@ -68,30 +70,55 @@ double sanitize_covariance_parameter(
     return sanitized;
 }
 
-roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig sanitize_covariance_config_with_logging(
+roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig
+sanitize_covariance_config_with_logging(
     const rclcpp::Logger & logger,
     const roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig & config)
 {
     const auto defaults = roboteq_ros2_driver::odom_covariance::default_config();
     return {
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_x", config.pose_x, defaults.pose_x),
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_y", config.pose_y, defaults.pose_y),
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_z", config.pose_z, defaults.pose_z),
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_roll", config.pose_roll, defaults.pose_roll),
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_pitch", config.pose_pitch, defaults.pose_pitch),
-        sanitize_covariance_parameter(logger, "odom_pose_covariance_yaw", config.pose_yaw, defaults.pose_yaw),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_linear_x", config.twist_linear_x, defaults.twist_linear_x),
+            logger, "odom_pose_covariance_x", config.pose_x, defaults.pose_x),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_linear_y", config.twist_linear_y, defaults.twist_linear_y),
+            logger, "odom_pose_covariance_y", config.pose_y, defaults.pose_y),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_linear_z", config.twist_linear_z, defaults.twist_linear_z),
+            logger, "odom_pose_covariance_z", config.pose_z, defaults.pose_z),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_angular_x", config.twist_angular_x, defaults.twist_angular_x),
+            logger, "odom_pose_covariance_roll", config.pose_roll, defaults.pose_roll),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_angular_y", config.twist_angular_y, defaults.twist_angular_y),
+            logger, "odom_pose_covariance_pitch", config.pose_pitch, defaults.pose_pitch),
         sanitize_covariance_parameter(
-            logger, "odom_twist_covariance_angular_z", config.twist_angular_z, defaults.twist_angular_z),
+            logger, "odom_pose_covariance_yaw", config.pose_yaw, defaults.pose_yaw),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_linear_x",
+            config.twist_linear_x,
+            defaults.twist_linear_x),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_linear_y",
+            config.twist_linear_y,
+            defaults.twist_linear_y),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_linear_z",
+            config.twist_linear_z,
+            defaults.twist_linear_z),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_angular_x",
+            config.twist_angular_x,
+            defaults.twist_angular_x),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_angular_y",
+            config.twist_angular_y,
+            defaults.twist_angular_y),
+        sanitize_covariance_parameter(
+            logger,
+            "odom_twist_covariance_angular_z",
+            config.twist_angular_z,
+            defaults.twist_angular_z),
     };
 }
 }  // namespace
@@ -106,7 +133,7 @@ uint32_t millis()
 namespace Roboteq
 {
 Roboteq::Roboteq() : Node("roboteq_ros2_driver")
-//differential_drive_kinematics_(void)
+// differential_drive_kinematics_(void)
 // initialize parameters and variables
 {
     pub_odom_tf = this->declare_parameter("pub_odom_tf", false);
@@ -117,8 +144,8 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     port = this->declare_parameter("port", "/dev/ttyUSB0");
     baud = this->declare_parameter("baud", 115200);
     open_loop = this->declare_parameter("open_loop", false);
-    wheel_radius = this->declare_parameter("wheel_radius", 0.085); // in meters
-    wheelbase = this->declare_parameter("wheelbase", 0.453); // in meters
+    wheel_radius = this->declare_parameter("wheel_radius", 0.085);  // in meters
+    wheelbase = this->declare_parameter("wheelbase", 0.453);  // in meters
     encoder_ppr = this->declare_parameter("encoder_ppr", 1024);
     encoder_cpr = this->declare_parameter("encoder_cpr", 4096);
     const auto default_eppr = -1024;
@@ -147,18 +174,18 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
         this->declare_parameter("odom_pose_covariance_pitch", default_covariance.pose_pitch);
     odom_covariance_config_.pose_yaw =
         this->declare_parameter("odom_pose_covariance_yaw", default_covariance.pose_yaw);
-    odom_covariance_config_.twist_linear_x =
-        this->declare_parameter("odom_twist_covariance_linear_x", default_covariance.twist_linear_x);
-    odom_covariance_config_.twist_linear_y =
-        this->declare_parameter("odom_twist_covariance_linear_y", default_covariance.twist_linear_y);
-    odom_covariance_config_.twist_linear_z =
-        this->declare_parameter("odom_twist_covariance_linear_z", default_covariance.twist_linear_z);
-    odom_covariance_config_.twist_angular_x =
-        this->declare_parameter("odom_twist_covariance_angular_x", default_covariance.twist_angular_x);
-    odom_covariance_config_.twist_angular_y =
-        this->declare_parameter("odom_twist_covariance_angular_y", default_covariance.twist_angular_y);
-    odom_covariance_config_.twist_angular_z =
-        this->declare_parameter("odom_twist_covariance_angular_z", default_covariance.twist_angular_z);
+    odom_covariance_config_.twist_linear_x = this->declare_parameter(
+        "odom_twist_covariance_linear_x", default_covariance.twist_linear_x);
+    odom_covariance_config_.twist_linear_y = this->declare_parameter(
+        "odom_twist_covariance_linear_y", default_covariance.twist_linear_y);
+    odom_covariance_config_.twist_linear_z = this->declare_parameter(
+        "odom_twist_covariance_linear_z", default_covariance.twist_linear_z);
+    odom_covariance_config_.twist_angular_x = this->declare_parameter(
+        "odom_twist_covariance_angular_x", default_covariance.twist_angular_x);
+    odom_covariance_config_.twist_angular_y = this->declare_parameter(
+        "odom_twist_covariance_angular_y", default_covariance.twist_angular_y);
+    odom_covariance_config_.twist_angular_z = this->declare_parameter(
+        "odom_twist_covariance_angular_z", default_covariance.twist_angular_z);
     serial_read_timeout_ms_ = this->declare_parameter("serial_read_timeout_ms", 50);
     serial_write_timeout_ms_ = this->declare_parameter("serial_write_timeout_ms", 50);
     serial_transaction_timeout_ms_ = this->declare_parameter("serial_transaction_timeout_ms", 100);
@@ -206,21 +233,25 @@ void Roboteq::initialize_valid_configuration()
 //  odom publisher
 //
     odom_pub = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic, 100);
-    ticks_publisher_ = this->create_publisher<roboteq_ros2_driver::msg::WheelTicks>("wheel_ticks", 100);
-    diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
+    ticks_publisher_ =
+        this->create_publisher<roboteq_ros2_driver::msg::WheelTicks>("wheel_ticks", 100);
+    diagnostics_pub_ =
+        this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/diagnostics", 10);
 
 //
 // cmd_vel subscriber
 //
 
-    command_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    feedback_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    command_callback_group_ =
+        this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    feedback_callback_group_ =
+        this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
     rclcpp::SubscriptionOptions cmdvel_options;
     cmdvel_options.callback_group = command_callback_group_;
     cmdvel_sub = this->create_subscription<geometry_msgs::msg::Twist>(
-        cmdvel_topic, // topic name
-        1,         // QoS history depth
+        cmdvel_topic,  // topic name
+        1,  // QoS history depth
         std::bind(&Roboteq::cmdvel_callback, this, std::placeholders::_1),
         cmdvel_options);
     using namespace std::chrono_literals;
@@ -234,7 +265,8 @@ void Roboteq::initialize_valid_configuration()
         feedback_callback_group_);
     diagnostics_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(
-            static_cast<int>(std::max(1.0, 1000.0 / std::max(0.001, diagnostics_publish_rate_hz_)))),
+            static_cast<int>(
+                std::max(1.0, 1000.0 / std::max(0.001, diagnostics_publish_rate_hz_)))),
         std::bind(&Roboteq::diagnostics_loop, this),
         feedback_callback_group_);
     start_serial_worker();
@@ -297,8 +329,9 @@ void Roboteq::update_parameters()
     this->get_parameter("diagnostics_publish_rate_hz", diagnostics_publish_rate_hz_);
     this->get_parameter("encoder_freshness_warn_s", encoder_freshness_warn_s_);
     this->get_parameter("encoder_freshness_error_s", encoder_freshness_error_s_);
-    this->get_parameter("require_fresh_command_after_reconnect", require_fresh_command_after_reconnect_);
-
+    this->get_parameter(
+        "require_fresh_command_after_reconnect",
+        require_fresh_command_after_reconnect_);
 }
 
 roboteq_ros2_driver::parameter_validation::DriverParameters
@@ -375,7 +408,8 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
 
     RCLCPP_DEBUG(
         this->get_logger(),
-        "WHEELS_TO_CHANNELS | left_speed=%.3f right_speed=%.3f | channel_1=%s %.3f | channel_2=%s %.3f",
+        "WHEELS_TO_CHANNELS | left_speed=%.3f right_speed=%.3f | "
+        "channel_1=%s %.3f | channel_2=%s %.3f",
         wheel_speeds.left_mps,
         wheel_speeds.right_mps,
         channel_1.c_str(),
@@ -448,7 +482,7 @@ void Roboteq::odom_loop()
     }
 
 
-    //uint32_t nowtime = millis();
+    // uint32_t nowtime = millis();
 
 
 
@@ -456,7 +490,7 @@ void Roboteq::odom_loop()
     double dt = static_cast<float>(DELTAT(nowtime, odom_last_time)) / 1000.0;
     odom_last_time = nowtime;
 
-    //RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
+    // RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
 
     const auto integration = odometry_integrator_.integrate_channel_sample(
         sample->channel_1,
@@ -474,22 +508,22 @@ void Roboteq::odom_loop()
     publish_ticks(integration->ticks.left_ticks, integration->ticks.right_ticks);
     odom_publish(*integration);
 
-    return ; // early return if no encoders read
+    return ;  // early return if no encoders read
 }
 
 
 
 void Roboteq::publish_ticks(int left_ticks, int right_ticks)
 {
-
     roboteq_ros2_driver::msg::WheelTicks msg;
     msg.header.stamp = this->get_clock()->now();
     msg.header.frame_id = "ticks_frame";
     msg.left_ticks = left_ticks;
     msg.right_ticks = right_ticks;
 
-    msg.right_ticks_norm = static_cast<double>(right_ticks) / encoder_cpr; // convert ticks to turns
-    msg.left_ticks_norm = static_cast<double>(left_ticks) / encoder_cpr; // convert ticks to turns
+    msg.right_ticks_norm =
+        static_cast<double>(right_ticks) / encoder_cpr;  // convert ticks to turns
+    msg.left_ticks_norm = static_cast<double>(left_ticks) / encoder_cpr;  // convert ticks to turns
 
     ticks_publisher_->publish(msg);
 }
@@ -498,7 +532,6 @@ void Roboteq::publish_ticks(int left_ticks, int right_ticks)
 
 void Roboteq::odom_publish(const roboteq_ros2_driver::odometry::IntegrationResult & integration)
 {
-
     odom_x = integration.pose.x;
     odom_y = integration.pose.y;
     odom_yaw = integration.pose.theta;
@@ -509,7 +542,7 @@ void Roboteq::odom_publish(const roboteq_ros2_driver::odometry::IntegrationResul
     // Convert tf2::Quaternion to geometry_msgs::msg::Quaternion
     geometry_msgs::msg::Quaternion quat = tf2::toMsg(tf2_quat);
 
-    //odom_msg.header.seq++; //? not used in ros2 ?
+    // odom_msg.header.seq++; //? not used in ros2 ?
     odom_msg.header.stamp = this->get_clock()->now();
     odom_msg.pose.pose.position.x = odom_x;
     odom_msg.pose.pose.position.y = odom_y;
@@ -596,7 +629,6 @@ Roboteq::~Roboteq()
         serial_worker_->stop();
     }
     // rclcpp::shutdown(); // uncomment if node doesnt destroy properly
-
 }
 
 void Roboteq::start_serial_worker()
@@ -606,7 +638,8 @@ void Roboteq::start_serial_worker()
     transport_config.baud = baud;
     transport_config.read_timeout = std::chrono::milliseconds(serial_read_timeout_ms_);
     transport_config.write_timeout = std::chrono::milliseconds(serial_write_timeout_ms_);
-    transport_config.transaction_timeout = std::chrono::milliseconds(serial_transaction_timeout_ms_);
+    transport_config.transaction_timeout =
+        std::chrono::milliseconds(serial_transaction_timeout_ms_);
     transport_config.max_response_bytes = static_cast<std::size_t>(serial_max_response_bytes_);
 
     roboteq_ros2_driver::SerialWorkerConfig worker_config;
@@ -636,7 +669,6 @@ void Roboteq::start_serial_worker()
 
 int main(int argc, char* argv[])
 {
-
     rclcpp::init(argc, argv);
 
     rclcpp::executors::MultiThreadedExecutor exec;
@@ -646,6 +678,4 @@ int main(int argc, char* argv[])
     exec.spin();
     rclcpp::shutdown();
     return 0;
-
-
 }
