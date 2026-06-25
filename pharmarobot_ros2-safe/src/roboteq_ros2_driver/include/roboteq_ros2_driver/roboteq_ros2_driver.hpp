@@ -46,7 +46,6 @@ class Roboteq : public rclcpp::Node
   ~Roboteq();
 
   private:
-
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
@@ -103,9 +102,9 @@ class Roboteq : public rclcpp::Node
   double encoder_freshness_error_s_{1.0};
   roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig odom_covariance_config_{};
   // Test different odom msg memory
-  //nav_msgs::msg::Odometry odom_msg{};
+  // nav_msgs::msg::Odometry odom_msg{};
   nav_msgs::msg::Odometry odom_msg{};
-  //geometry_msgs::msg::Twist twist_msg{};
+  // geometry_msgs::msg::Twist twist_msg{};
 
 
 
@@ -129,18 +128,16 @@ class Roboteq : public rclcpp::Node
   void diagnostics_loop();
   void start_serial_worker();
 
-  //subscriber
+  // subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdvel_sub;
 
-  //publisher
+  // publisher
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Publisher<roboteq_ros2_driver::msg::WheelTicks>::SharedPtr ticks_publisher_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> odom_tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   roboteq_ros2_driver::DiagnosticsPublisherState diagnostics_state_;
-
-
 };
 
 }  // namespace Roboteq
