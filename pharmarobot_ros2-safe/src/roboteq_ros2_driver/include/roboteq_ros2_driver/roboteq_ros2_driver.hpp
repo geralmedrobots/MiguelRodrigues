@@ -120,7 +120,7 @@ class Roboteq : public rclcpp::Node
   void odom_setup();
   void odom_loop();
   void odom_publish(const roboteq_ros2_driver::odometry::IntegrationResult & integration);
-  void publish_ticks(int left_ticks,int right_ticks);
+  void publish_ticks(int left_ticks, int right_ticks);
 
   void update_parameters();
   roboteq_ros2_driver::parameter_validation::DriverParameters validation_parameters() const;
@@ -143,7 +143,7 @@ class Roboteq : public rclcpp::Node
 
 };
 
-}
+}  // namespace Roboteq
 
 
 
