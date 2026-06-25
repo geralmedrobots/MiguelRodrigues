@@ -28,8 +28,8 @@
 #include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 #include <charconv>
-#include <cstddef>
 #include <string_view>
+#include <cstddef>
 #include <system_error>
 
 namespace roboteq_ros2_driver

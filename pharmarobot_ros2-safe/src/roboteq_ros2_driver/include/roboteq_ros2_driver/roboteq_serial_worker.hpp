@@ -28,6 +28,7 @@
 #ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_WORKER_HPP_
 #define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_WORKER_HPP_
 
+#include <optional>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -35,7 +36,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
