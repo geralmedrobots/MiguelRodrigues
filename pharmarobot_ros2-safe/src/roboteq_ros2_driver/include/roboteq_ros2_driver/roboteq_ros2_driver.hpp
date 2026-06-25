@@ -149,4 +149,4 @@ class Roboteq : public rclcpp::Node
 
 
 
-#endif
+#endif  // ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_

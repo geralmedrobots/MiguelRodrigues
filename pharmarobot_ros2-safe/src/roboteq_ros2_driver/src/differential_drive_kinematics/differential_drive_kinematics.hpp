@@ -25,8 +25,8 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 
-#ifndef DIFFERENTIAL_DRIVE_KINEMATICS_HPP
-#define DIFFERENTIAL_DRIVE_KINEMATICS_HPP
+#ifndef DIFFERENTIAL_DRIVE_KINEMATICS__DIFFERENTIAL_DRIVE_KINEMATICS_HPP_
+#define DIFFERENTIAL_DRIVE_KINEMATICS__DIFFERENTIAL_DRIVE_KINEMATICS_HPP_
 
 #include <cmath> // For std::sin, std::cos, std::abs, std::fmod, std::atan2
 
@@ -104,4 +104,4 @@ private:
     int encoder_resolution_ticks_per_rev_ {0}; // Encoder resolution in ticks per revolution
 };
 
-#endif // DIFFERENTIAL_DRIVE_KINEMATICS_HPP
+#endif  // DIFFERENTIAL_DRIVE_KINEMATICS__DIFFERENTIAL_DRIVE_KINEMATICS_HPP_
