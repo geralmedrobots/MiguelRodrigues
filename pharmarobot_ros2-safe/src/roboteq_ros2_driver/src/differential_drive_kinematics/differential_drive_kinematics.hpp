@@ -66,20 +66,20 @@ public:
     /**
      * @brief Constructor for DifferentialDriveKinematics.
      */
-    DifferentialDriveKinematics(double wheel_radius, double track_width, int encoder_resolution_ticks_per_rev);      
+    DifferentialDriveKinematics(double wheel_radius, double track_width, int encoder_resolution_ticks_per_rev);
 
 
     /**
-     * @brief       
-     * 
-     * @param wheel_radius 
-     * @param track_width 
-     * @param encoder_resolution_ticks_per_rev 
+     * @brief
+     *
+     * @param wheel_radius
+     * @param track_width
+     * @param encoder_resolution_ticks_per_rev
      */
 
     void initParam(double wheel_radius, double track_width, int encoder_resolution_ticks_per_rev);
 
- 
+
     /**
      * @brief Calculates the robot's linear and angular velocities from wheel angular velocities.
      * @param omega_L Angular velocity of the left wheel in rad/s.

@@ -6,10 +6,10 @@
 #include <cmath>
 #include <algorithm>
 #include <chrono>
-#include <functional> 
-#include <memory>     
+#include <functional>
+#include <memory>
 #include <stdexcept>
-#include <string>     
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -94,7 +94,7 @@ roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig sanitize_covarian
             logger, "odom_twist_covariance_angular_z", config.twist_angular_z, defaults.twist_angular_z),
     };
 }
-}
+}  // namespace
 
 uint32_t millis()
 {
@@ -130,7 +130,7 @@ Roboteq::Roboteq() : Node("roboteq_ros2_driver")
     command_angular_sign = this->declare_parameter("command_angular_sign", -1);
     max_amps = this->declare_parameter("max_amps", 5.0);
     max_rpm = this->declare_parameter("max_rpm", 100);
-    
+
     channel_1 = this->declare_parameter("channel_1", "right");
     channel_2 = this->declare_parameter("channel_2", "left");
     cmd_timeout_s_ = this->declare_parameter("cmd_timeout_s", 0.5);
@@ -190,14 +190,14 @@ void Roboteq::initialize_valid_configuration()
     RCLCPP_INFO(this->get_logger(), "Parameters initialized ...");
     odometry_integrator_.init(wheel_radius, wheelbase, encoder_cpr);
 
-    
+
     odom_x         = 0.0;
     odom_y         = 0.0;
     odom_yaw       = 0.0;
     odom_last_time = 0;
 
     wheel_circumference = 2*PI*wheel_radius;
-    
+
 
     odom_msg = nav_msgs::msg::Odometry();
 
@@ -239,7 +239,7 @@ void Roboteq::initialize_valid_configuration()
         feedback_callback_group_);
     start_serial_worker();
     // enable modifying params at run-time
-    /*    
+    /*
     using namespace std::chrono_literals;
 
     param_update_timer =
@@ -397,7 +397,7 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
 
 void Roboteq::odom_setup()
 {
-    RCLCPP_INFO(this->get_logger(),"setting up odom...");
+    RCLCPP_INFO(this->get_logger(), "setting up odom...");
     if (pub_odom_tf)
     {
         odom_tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -412,7 +412,7 @@ void Roboteq::odom_setup()
 
 
     odom_msg.header.stamp = this->get_clock()->now();
-    
+
     odom_msg.header.frame_id = odom_frame;
     odom_msg.child_frame_id = base_frame;
 
@@ -424,9 +424,9 @@ void Roboteq::odom_setup()
         roboteq_ros2_driver::odom_covariance::build_twist_covariance(covariance_config);
 
     // start encoder streaming
-    RCLCPP_INFO_STREAM(this->get_logger(),"covariance set");
-    RCLCPP_INFO_STREAM(this->get_logger(),"odometry polling will be handled by serial worker");
-    
+    RCLCPP_INFO_STREAM(this->get_logger(), "covariance set");
+    RCLCPP_INFO_STREAM(this->get_logger(), "odometry polling will be handled by serial worker");
+
     odom_last_time = millis();
 #ifdef _ODOM_SENSORS
     current_last_time = millis();
@@ -447,17 +447,17 @@ void Roboteq::odom_loop()
         return;
     }
 
-    
+
     //uint32_t nowtime = millis();
-    
-    
-    
+
+
+
     uint32_t nowtime = millis();
-    double dt = (float)DELTAT(nowtime, odom_last_time) / 1000.0;
+    double dt = static_cast<float>(DELTAT(nowtime, odom_last_time)) / 1000.0;
     odom_last_time = nowtime;
-    
+
     //RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
-    
+
     const auto integration = odometry_integrator_.integrate_channel_sample(
         sample->channel_1,
         sample->channel_2,
@@ -473,13 +473,13 @@ void Roboteq::odom_loop()
 
     publish_ticks(integration->ticks.left_ticks, integration->ticks.right_ticks);
     odom_publish(*integration);
-    
+
     return ; // early return if no encoders read
 }
 
 
 
-void Roboteq::publish_ticks(int left_ticks,int right_ticks)
+void Roboteq::publish_ticks(int left_ticks, int right_ticks)
 {
 
     roboteq_ros2_driver::msg::WheelTicks msg;
@@ -632,13 +632,13 @@ void Roboteq::start_serial_worker()
     serial_worker_->start();
 }
 
-} // end of namespace
+}  // namespace Roboteq
 
 int main(int argc, char* argv[])
 {
 
     rclcpp::init(argc, argv);
-    
+
     rclcpp::executors::MultiThreadedExecutor exec;
     rclcpp::NodeOptions options;
     auto node = std::make_shared<Roboteq::Roboteq>();
@@ -647,5 +647,5 @@ int main(int argc, char* argv[])
     rclcpp::shutdown();
     return 0;
 
-   
+
 }

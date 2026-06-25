@@ -31,7 +31,7 @@
 
 // Implementation of DifferentialDriveKinematics
 //DifferentialDriveKinematics::DifferentialDriveKinematics()  = default;
-    
+
 
 DifferentialDriveKinematics::DifferentialDriveKinematics(double wheel_radius, double track_width, int encoder_resolution)
     : wheel_radius_(wheel_radius), track_width_(track_width), encoder_resolution_ticks_per_rev_(encoder_resolution) {
@@ -43,17 +43,17 @@ DifferentialDriveKinematics::DifferentialDriveKinematics(double wheel_radius, do
 
 
 void DifferentialDriveKinematics::initParam(double wheel_radius, double track_width, int encoder_resolution_ticks_per_rev) {
-    
-    
-    wheel_radius_ = wheel_radius; 
+
+
+    wheel_radius_ = wheel_radius;
     track_width_  = track_width;
     encoder_resolution_ticks_per_rev_ = encoder_resolution_ticks_per_rev;
-    //,  encoder_resolution_ticks_per_rev_(0) 
+    //,  encoder_resolution_ticks_per_rev_(0)
     if (wheel_radius_ <= 0 || track_width_ <= 0 || encoder_resolution_ticks_per_rev_ == 0) {
         std::cerr << "Error: Wheel radius and track width must be positive, and encoder resolution must be non-zero." << std::endl;
     }
 }
-    
+
 RobotDisplacement DifferentialDriveKinematics::calculateForwardKinematics(double ticks_L, double ticks_R) const {
     RobotDisplacement twist;
 
