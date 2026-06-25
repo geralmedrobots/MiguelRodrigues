@@ -42,7 +42,7 @@ namespace Roboteq
 class Roboteq : public rclcpp::Node
 {
   public:
-  explicit Roboteq(); //(nodeOptions options?)
+  Roboteq(); //(nodeOptions options?)
   ~Roboteq();
 
   private:
