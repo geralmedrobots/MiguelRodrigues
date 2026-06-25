@@ -4,30 +4,29 @@
 #include <math.h>
 #include <unistd.h>
 
-#include <cstdio>
-#include <iostream>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
-#include <vector>
-
-#include "diagnostic_msgs/msg/diagnostic_array.hpp"
-#include "geometry_msgs/msg/twist.hpp"
-#include "std_msgs/msg/header.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "tf2_ros/transform_broadcaster.h"
-
 #if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #else
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #endif
-#include <cmath>
-#include <climits>
-
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
+
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <vector>
+
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "std_msgs/msg/header.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 #include "roboteq_ros2_driver/roboteq_diagnostics.hpp"

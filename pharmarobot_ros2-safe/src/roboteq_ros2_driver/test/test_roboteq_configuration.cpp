@@ -25,13 +25,13 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 
-#include "roboteq_ros2_driver/roboteq_configuration.hpp"
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <string>
 #include <vector>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/roboteq_configuration.hpp"
 
 namespace configuration = roboteq_ros2_driver::configuration;
 

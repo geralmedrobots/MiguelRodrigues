@@ -25,12 +25,12 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 
-#include "roboteq_ros2_driver/command_scaling.hpp"
+#include <gtest/gtest.h>
 
 #include <cmath>
 #include <limits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/command_scaling.hpp"
 
 namespace scaling = roboteq_ros2_driver::command_scaling;
 

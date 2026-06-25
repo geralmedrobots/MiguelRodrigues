@@ -1,20 +1,13 @@
-#include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
-#include "roboteq_ros2_driver/command_watchdog.hpp"
-#include "roboteq_ros2_driver/driver_parameter_validation.hpp"
-#include "roboteq_ros2_driver/odom_covariance.hpp"
-#include "roboteq_ros2_driver/odom_tf.hpp"
-#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
-#include "roboteq_ros2_driver/roboteq_configuration.hpp"
-#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
-#include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
+#include <signal.h>
 
+#include <optional>
+#include <tf2/LinearMath/Quaternion.h>
 
+#include <cmath>
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <functional> 
 #include <memory>     
-#include <optional>
 #include <stdexcept>
 #include <string>     
 #include <thread>
@@ -25,7 +18,6 @@
 #include <iostream>
 
 // dependencies for ROS
-#include <signal.h>
 #include <string>
 #include <sstream>
 
@@ -45,8 +37,15 @@
 #define ROBORTEQ_WRITING_TIMEOUT 5 //
 
 
-#include <tf2/LinearMath/Quaternion.h>
-
+#include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
+#include "roboteq_ros2_driver/command_watchdog.hpp"
+#include "roboteq_ros2_driver/driver_parameter_validation.hpp"
+#include "roboteq_ros2_driver/odom_covariance.hpp"
+#include "roboteq_ros2_driver/odom_tf.hpp"
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
+#include "roboteq_ros2_driver/roboteq_configuration.hpp"
+#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
+#include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
 
 namespace

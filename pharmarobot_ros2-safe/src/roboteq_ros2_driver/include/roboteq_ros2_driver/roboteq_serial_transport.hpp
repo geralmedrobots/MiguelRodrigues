@@ -28,13 +28,14 @@
 #ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_TRANSPORT_HPP_
 #define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_SERIAL_TRANSPORT_HPP_
 
-#include <chrono>
+#include <serial/serial.h>
+
 #include <cstddef>
+
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
-
-#include <serial/serial.h>
 
 namespace roboteq_ros2_driver
 {

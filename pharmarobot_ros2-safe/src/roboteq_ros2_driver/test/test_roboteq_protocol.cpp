@@ -1,9 +1,9 @@
-#include "roboteq_ros2_driver/roboteq_protocol.hpp"
+#include <gtest/gtest.h>
 
 #include <climits>
 #include <string>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/roboteq_protocol.hpp"
 
 namespace protocol = roboteq_ros2_driver::protocol;
 

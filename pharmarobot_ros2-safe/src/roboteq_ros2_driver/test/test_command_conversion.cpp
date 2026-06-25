@@ -25,9 +25,9 @@
 // POSSIBILITY OF SUCH DAMAGE.
 //
 
-#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
-
 #include <gtest/gtest.h>
+
+#include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
 
 namespace conversion = roboteq_ros2_driver::command_conversion;
 

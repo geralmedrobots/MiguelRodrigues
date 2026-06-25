@@ -1,8 +1,8 @@
-#include "roboteq_ros2_driver/command_watchdog.hpp"
+#include <gtest/gtest.h>
 
 #include <limits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/command_watchdog.hpp"
 
 namespace watchdog = roboteq_ros2_driver::command_watchdog;
 

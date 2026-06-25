@@ -1,9 +1,9 @@
-#include "roboteq_ros2_driver/odom_covariance.hpp"
+#include <gtest/gtest.h>
 
 #include <cstddef>
 #include <limits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/odom_covariance.hpp"
 
 namespace covariance = roboteq_ros2_driver::odom_covariance;
 

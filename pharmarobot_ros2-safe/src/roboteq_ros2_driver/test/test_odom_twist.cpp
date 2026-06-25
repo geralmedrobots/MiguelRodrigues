@@ -1,9 +1,9 @@
-#include "roboteq_ros2_driver/odom_twist.hpp"
+#include <gtest/gtest.h>
 
 #include <cmath>
 #include <limits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/odom_twist.hpp"
 
 namespace odom_twist = roboteq_ros2_driver::odom_twist;
 constexpr double kPi = 3.14159265358979323846;

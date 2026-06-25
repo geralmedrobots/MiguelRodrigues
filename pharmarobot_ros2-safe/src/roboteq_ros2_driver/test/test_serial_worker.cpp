@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <chrono>
+#include <algorithm>
 #include <exception>
 #include <memory>
 #include <mutex>

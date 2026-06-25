@@ -1,8 +1,8 @@
-#include "roboteq_ros2_driver/roboteq_odometry.hpp"
+#include <gtest/gtest.h>
 
 #include <climits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/roboteq_odometry.hpp"
 
 namespace odometry = roboteq_ros2_driver::odometry;
 
