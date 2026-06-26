@@ -28,6 +28,7 @@
 #include "roboteq_ros2_driver/odom_tf.hpp"
 
 #include <tf2/LinearMath/Quaternion.h>
+#include <string>
 
 namespace roboteq_ros2_driver
 {

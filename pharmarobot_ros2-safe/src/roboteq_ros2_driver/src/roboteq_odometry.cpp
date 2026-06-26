@@ -30,6 +30,7 @@
 #include <climits>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 namespace roboteq_ros2_driver
 {

@@ -32,8 +32,10 @@
 #include <cstdint>
 #include <exception>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace roboteq_ros2_driver
 {

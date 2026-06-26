@@ -27,6 +27,8 @@
 
 #include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
 
+#include <string>
+
 namespace roboteq_ros2_driver
 {
 namespace command_conversion

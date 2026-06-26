@@ -27,6 +27,8 @@
 
 #include "roboteq_ros2_driver/roboteq_configuration.hpp"
 
+#include <vector>
+
 namespace roboteq_ros2_driver
 {
 namespace configuration
