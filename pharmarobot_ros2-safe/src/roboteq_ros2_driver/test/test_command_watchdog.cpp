@@ -28,6 +28,7 @@ TEST(CommandWatchdog, StopsForExpiredCommand)
 
 TEST(CommandWatchdog, DoesNotStopForNonFiniteAge)
 {
-  EXPECT_FALSE(watchdog::should_send_timeout_stop(
-    true, false, std::numeric_limits<double>::infinity(), 0.5));
+  EXPECT_FALSE(
+    watchdog::should_send_timeout_stop(
+      true, false, std::numeric_limits<double>::infinity(), 0.5));
 }

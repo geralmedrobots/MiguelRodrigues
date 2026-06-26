@@ -85,7 +85,7 @@ std::optional<ChannelSpeeds> apply_motor_signs(
   }
   return ChannelSpeeds{
     motor_sign_1 * channels.channel_1_mps,
-      motor_sign_2 * channels.channel_2_mps};
+    motor_sign_2 * channels.channel_2_mps};
 }
 
 }  // namespace command_conversion

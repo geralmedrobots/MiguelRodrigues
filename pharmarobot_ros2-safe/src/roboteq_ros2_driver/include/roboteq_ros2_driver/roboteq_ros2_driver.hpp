@@ -35,16 +35,16 @@
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
 
-#define PI M_PI 
+#define PI M_PI
 namespace Roboteq
 {
 class Roboteq : public rclcpp::Node
 {
-  public:
-  Roboteq(); //(nodeOptions options?)
+public:
+  Roboteq();  // (nodeOptions options?)
   ~Roboteq();
 
-  private:
+private:
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
@@ -106,7 +106,6 @@ class Roboteq : public rclcpp::Node
   // geometry_msgs::msg::Twist twist_msg{};
 
 
-
   //
   // cmd_vel subscriber
   //
@@ -140,9 +139,6 @@ class Roboteq : public rclcpp::Node
 };
 
 }  // namespace Roboteq
-
-
-
 
 
 #endif  // ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
