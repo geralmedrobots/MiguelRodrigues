@@ -1,8 +1,8 @@
-#include "roboteq_ros2_driver/command_watchdog.hpp"
+#include <gtest/gtest.h>
 
 #include <limits>
 
-#include <gtest/gtest.h>
+#include "roboteq_ros2_driver/command_watchdog.hpp"
 
 namespace watchdog = roboteq_ros2_driver::command_watchdog;
 
@@ -28,6 +28,7 @@ TEST(CommandWatchdog, StopsForExpiredCommand)
 
 TEST(CommandWatchdog, DoesNotStopForNonFiniteAge)
 {
-  EXPECT_FALSE(watchdog::should_send_timeout_stop(
-    true, false, std::numeric_limits<double>::infinity(), 0.5));
+  EXPECT_FALSE(
+    watchdog::should_send_timeout_stop(
+      true, false, std::numeric_limits<double>::infinity(), 0.5));
 }

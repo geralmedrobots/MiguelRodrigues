@@ -12,24 +12,23 @@ Does not require any MicroBasic script to operate.
 
 ## Usage
 
-Clone to src directory of ros2 workspace, then `colcon build` 
+This repository builds the driver in the ROS 2 Humble Docker workspace. The
+`serial` package is included in this workspace and is built with the driver.
 
-Requires serial package, which is not available as deb in ROS2. If not already installed, install ros2 branch of serial:
+From inside `pharma_container`:
 
-Get the code:
-    
-    git clone -b ros2 https://github.com/SunnyApp-Robotics/serial.git
+    cd /ros_ws
+    source /opt/ros/humble/setup.bash
+    colcon --log-base /tmp/roboteq_doc_log build \
+      --merge-install --symlink-install \
+      --packages-up-to roboteq_ros2_driver \
+      --build-base /tmp/roboteq_doc_build \
+      --install-base /tmp/roboteq_doc_install
 
-Build:
-
-    make
-
-Install:
-
-    make install
-    
-    
-Sample launch files in roboteq_ros2_driver/launch, or run `ros2 run roboteq_ros2_driver roboteq_ros2_driver`
+The normal robot bring-up path is `teleop_pharma/control_only.launch.py`, which
+starts joystick input, command arbitration, and this driver with
+`config/roboteq.yaml`. Direct `ros2 run` or `ros2 launch` use can access the
+Roboteq serial device and must follow the repository hardware approval rules.
 
 ## Encoder response parsing safety
 
@@ -194,9 +193,11 @@ Validated parameters are:
     port: non-empty
     baud: positive
     wheel_radius, wheelbase: finite and positive
-    encoder_ppr, encoder_cpr: non-zero magnitude, excluding INT_MIN
+    encoder_ppr, encoder_cpr: positive
+    encoder_eppr: non-zero magnitude, excluding INT_MIN
     motor_sign_1, motor_sign_2: exactly -1 or 1
     encoder_sign_1, encoder_sign_2: exactly -1 or 1
+    command_angular_sign: exactly -1 or 1
     max_amps: finite and positive
     max_rpm: positive
     cmd_timeout_s: finite and positive
@@ -204,6 +205,7 @@ Validated parameters are:
     serial_transaction_timeout_ms, serial_max_response_bytes: positive
     serial_reconnect_interval_s: finite and positive
     encoder_poll_period_ms: positive
+    diagnostics_publish_rate_hz: finite and positive
     channel_1, channel_2: one "left" and one "right"
 
 The only upper bounds enforced are software representation bounds already
@@ -213,10 +215,12 @@ must fit in an `int`. No hardware upper limit is imposed because this repository
 does not contain an authoritative controller or robot-specific maximum for
 wheel geometry, CPR/PPR, RPM, current, baud, response size, or timing values.
 
-The explicit sign defaults preserve prior behavior: motor channel commands use
-`+1` and encoder samples use `-1` on both channels. Changing a sign changes
-motor direction or encoder convention and requires the separate safety approval
-and controlled hardware validation defined by the repository workflow.
+The current node defaults and production YAML use `+1` for both motor sign
+parameters and `+1` for both encoder sign parameters. The production YAML also
+uses `encoder_eppr: -1024` and `command_angular_sign: -1`. Changing any sign or
+encoder direction parameter changes motor direction, encoder convention, or
+angular command convention and requires separate safety approval and controlled
+hardware validation.
 
 This change intentionally preserves command conversion, command scaling,
 saturation, odometry math, covariance, dynamic TF, frame IDs, encoder signs,
@@ -225,55 +229,51 @@ existing channel mapping. Valid production parameter values and their runtime
 behavior are unchanged; the four sign values are now explicit parameters with
 defaults matching the previous hard-coded behavior.
 
-### Validation and traceability record
+### Validation commands
 
-Task `AMR-ROBOTEQ-PARAM-001` was validated offline with ROS 2 Foxy. No ROS node,
-serial device, controller, or robot hardware was run. The recorded commands
-were:
+Run current validation in the ROS 2 Humble Docker workspace:
 
-    source /opt/ros/foxy/setup.bash
-    colcon build --packages-select roboteq_ros2_driver
-    source install/setup.bash
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R 'test_driver_parameter_validation|test_command_conversion|test_roboteq_odometry|test_serial_worker' --output-on-failure
-    colcon test --packages-select roboteq_ros2_driver --event-handlers console_direct+
-    colcon test-result --verbose
-    git diff --check
+    docker exec pharma_container bash -lc '
+      cd /ros_ws
+      source /opt/ros/humble/setup.bash
+      colcon --log-base /tmp/roboteq_doc_log build \
+        --merge-install --symlink-install \
+        --packages-up-to roboteq_ros2_driver \
+        --build-base /tmp/roboteq_doc_build \
+        --install-base /tmp/roboteq_doc_install
+    '
 
-The package build passed. The focused tests passed 40/40 cases: parameter
-validation 12/12, command conversion 6/6, odometry 6/6, and serial worker
-16/16. All 12 functional test executables passed:
+    docker exec pharma_container bash -lc '
+      cd /ros_ws
+      source /opt/ros/humble/setup.bash
+      source /tmp/roboteq_doc_install/setup.bash
+      colcon --log-base /tmp/roboteq_doc_log test \
+        --merge-install \
+        --packages-select roboteq_ros2_driver \
+        --build-base /tmp/roboteq_doc_build \
+        --install-base /tmp/roboteq_doc_install \
+        --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_serial_worker|test_serial_transport|test_command_scaling|test_command_conversion|test_roboteq_configuration|test_roboteq_diagnostics|test_roboteq_odometry|test_driver_parameter_validation|test_odom_tf|test_odom_twist|test_odom_covariance"
+      colcon --log-base /tmp/roboteq_doc_log test-result \
+        --test-result-base /tmp/roboteq_doc_build --verbose
+    '
 
-    test_roboteq_protocol
-    test_roboteq_watchdog
-    test_roboteq_odom_tf
-    test_roboteq_covariance
-    test_twist_to_channel_speeds
-    test_differential_drive_scaling
-    test_command_conversion
-    test_controller_configuration
-    test_roboteq_odometry
-    test_driver_parameter_validation
-    test_serial_worker
-    test_serial_transport
+Current lint status: functional gtests pass, but full package lint currently
+reports pre-existing `cpplint` include-order failures in
+`include/roboteq_ros2_driver/roboteq_ros2_driver.hpp`.
 
-Five lint target categories still fail and match the recorded baseline:
-copyright, cppcheck, cpplint, uncrustify, and xmllint. Task-specific
-uncrustify regressions were resolved. The xmllint check cannot fetch the ROS
-schema in the restricted validation environment. The copyright check reports
-40 failures in 41 files versus the 37-in-38 baseline; the three additional
-files are the new validation header, implementation, and test. The package's
-BSD-3-Clause declaration does not identify an authoritative copyright owner or
-notice, so no ownership text was invented; copyright provenance remains
-deferred.
-
-Independent review accepted two LOW findings. First, the invalid-start test
-uses counters around the production `validate_then_start` gate rather than a
-full Roboteq component test with an injected transport. Static wiring confirms
-that ROS entity, transport, worker, controller, and motion paths occur after the
-gate, but a component regression test would provide stronger evidence. Second,
-the public validation header is installed while its library target is omitted
-from `install(TARGETS)`; the node works, but downstream install-space use of
-that validation API is incomplete.
+    docker exec pharma_container bash -lc '
+      cd /ros_ws
+      source /opt/ros/humble/setup.bash
+      source /tmp/roboteq_doc_install/setup.bash
+      colcon --log-base /tmp/roboteq_doc_log test \
+        --merge-install \
+        --packages-select roboteq_ros2_driver \
+        --build-base /tmp/roboteq_doc_build \
+        --install-base /tmp/roboteq_doc_install \
+        --event-handlers console_direct+
+      colcon --log-base /tmp/roboteq_doc_log test-result \
+        --test-result-base /tmp/roboteq_doc_build --verbose
+    '
 
 Configuration provenance is limited to repository defaults and the production
 YAML values. This repository does not record the robot serial number,
@@ -332,8 +332,8 @@ Default conservative fallback variances:
 The observed planar wheel-odometry DOFs are pose `x`, `y`, `yaw` and twist
 `linear.x`, `angular.z`. Unobserved DOFs use high covariance: pose `z`, `roll`,
 `pitch` and twist `linear.y`, `linear.z`, `angular.x`, `angular.y`. Negative,
-NaN, or infinite covariance parameters are rejected at startup and replaced
-with the conservative default for that field.
+NaN, or infinite covariance parameters are sanitized during odometry setup and
+replaced with the conservative default for that field.
 
 These defaults are not calibrated robot-specific values. To calibrate them,
 record ground-truth and wheel-odometry trajectories over representative
@@ -367,25 +367,9 @@ using new operating envelopes with real motors.
 
 ## Parser, serial worker, TF, twist, covariance and command scaling validation
 
-After sourcing the ROS Foxy environment and building the workspace, run the
-Roboteq protocol parser, serial worker, command watchdog, odometry TF, odometry
-twist, odometry covariance, and command scaling tests with:
-
-    colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_command_watchdog|test_roboteq_protocol|test_serial_worker|test_command_scaling|test_odom_tf|test_odom_twist|test_odom_covariance"
-
-Inspect results with:
-
-    colcon test-result --verbose
-
-The validated commands for this change were:
-
-    source /opt/ros/foxy/setup.bash && colcon build --packages-select roboteq_ros2_driver
-    source /opt/ros/foxy/setup.bash && colcon test --packages-select roboteq_ros2_driver --ctest-args -R "test_roboteq_protocol|test_serial_worker"
-    source /opt/ros/foxy/setup.bash && colcon test-result --verbose
-
-The validated test result for the current driver change set was:
-
-    Summary: 47 tests, 0 errors, 0 failures, 0 skipped
+The focused Humble validation commands above cover Roboteq protocol parsing,
+the serial worker, command watchdog, odometry TF, odometry twist, odometry
+covariance, diagnostics, and command scaling.
 
 The serial worker tests use a fake transport. They verify worker-only transport
 access, non-blocking command submission during slow serial writes, encoder
@@ -416,16 +400,12 @@ area clear:
 8. Send a fresh post-reconnect command through the normal safety chain and
    confirm motion resumes only after that fresh command.
 
-## ROS Foxy build note
+## ROS 2 Humble build note
 
-This package is built in ROS Foxy using `rosidl_target_interfaces(...)` for the
-generated `WheelTicks` message typesupport. The driver header also supports the
-Foxy `tf2_geometry_msgs/tf2_geometry_msgs.h` include path while remaining
-compatible with newer `tf2_geometry_msgs/tf2_geometry_msgs.hpp` installations.
-
-Known non-blocking build output: older driver revisions may report an unrelated
-unused `dt` variable warning in `driver_dev.cpp`; the odometry twist output
-uses that `dt` for velocity calculation.
+This package is built in ROS 2 Humble using `rosidl_target_interfaces(...)` for
+the generated `WheelTicks` message typesupport. The driver header keeps
+compatibility includes for both older and newer `tf2_geometry_msgs` header
+paths.
 
 ## Motor Power Connections
 
@@ -437,13 +417,17 @@ This driver assumes right motor is connected to channel 1 (M1) of motor controll
 - [X] Initial ROS2 release with motor commands and odometry stream
 - [X] Implement dynamic odometry transform broadcasting with tf2
 - [ ] Add roboteq/voltage, roboteq/current, roboteq/energy, and roboteq/temperature publishers
-- [ ] Make topic names and frames configuration parameters configurable at runtime.
-- [ ] Make robot configuration parameters configurable at runtime.
-- [ ] Make motor controller device configuration parameters configurable at runtime.
-- [ ] Make miscellaneous motor controller configuration parameters configurable at runtime.
+- [X] Make topic names and frames configurable through ROS parameters.
+- [X] Make robot geometry and encoder parameters configurable through ROS parameters.
+- [X] Make motor controller limits and serial timing configurable through ROS parameters.
 - [ ] Implement dynamically enabled self-test mode to verify correct motor power and encoder connections and configuration.
 
-### Note: I do not have access to Roboteq hardware anymore - feel free to contribute!
+### Hardware note
+
+This repository does not contain a completed hardware validation record for the
+current serial-worker, watchdog, reconnect, odometry, covariance, and
+diagnostics implementation. Hardware validation remains a separate approved
+step.
 [original work for ROS1](https://github.com/ecostech/roboteq_diff_driver)
 ## Authors
 

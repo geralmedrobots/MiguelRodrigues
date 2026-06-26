@@ -4,30 +4,29 @@
 #include <math.h>
 #include <unistd.h>
 
-#include <cstdio>
-#include <iostream>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
-#include <vector>
-
-#include "diagnostic_msgs/msg/diagnostic_array.hpp"
-#include "geometry_msgs/msg/twist.hpp"
-#include "std_msgs/msg/header.hpp"
-#include "nav_msgs/msg/odometry.hpp"
-#include "tf2_ros/transform_broadcaster.h"
-
 #if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #else
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #endif
-#include <cmath>
-#include <climits>
-
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
+
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <vector>
+
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "std_msgs/msg/header.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 #include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 #include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
@@ -36,17 +35,16 @@
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
 
-#define PI M_PI 
+#define PI M_PI
 namespace Roboteq
 {
 class Roboteq : public rclcpp::Node
 {
-  public:
-  explicit Roboteq(); //(nodeOptions options?)
+public:
+  Roboteq();  // (nodeOptions options?)
   ~Roboteq();
 
-  private:
-
+private:
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
@@ -103,10 +101,9 @@ class Roboteq : public rclcpp::Node
   double encoder_freshness_error_s_{1.0};
   roboteq_ros2_driver::odom_covariance::OdometryCovarianceConfig odom_covariance_config_{};
   // Test different odom msg memory
-  //nav_msgs::msg::Odometry odom_msg{};
+  // nav_msgs::msg::Odometry odom_msg{};
   nav_msgs::msg::Odometry odom_msg{};
-  //geometry_msgs::msg::Twist twist_msg{};
-
+  // geometry_msgs::msg::Twist twist_msg{};
 
 
   //
@@ -120,7 +117,7 @@ class Roboteq : public rclcpp::Node
   void odom_setup();
   void odom_loop();
   void odom_publish(const roboteq_ros2_driver::odometry::IntegrationResult & integration);
-  void publish_ticks(int left_ticks,int right_ticks);
+  void publish_ticks(int left_ticks, int right_ticks);
 
   void update_parameters();
   roboteq_ros2_driver::parameter_validation::DriverParameters validation_parameters() const;
@@ -129,24 +126,19 @@ class Roboteq : public rclcpp::Node
   void diagnostics_loop();
   void start_serial_worker();
 
-  //subscriber
+  // subscriber
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdvel_sub;
 
-  //publisher
+  // publisher
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Publisher<roboteq_ros2_driver::msg::WheelTicks>::SharedPtr ticks_publisher_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> odom_tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   roboteq_ros2_driver::DiagnosticsPublisherState diagnostics_state_;
-
-
 };
 
-}
+}  // namespace Roboteq
 
 
-
-
-
-#endif
+#endif  // ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
