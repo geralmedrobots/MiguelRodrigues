@@ -209,11 +209,16 @@ uint64_t SerialIoWorker::commandSequence() const
   return latest_submitted_sequence_;
 }
 
-bool SerialIoWorker::isReady() const
+bool SerialIoWorker::isConnected() const
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
-  return state_ == SerialConnectionState::ready ||
-         state_ == SerialConnectionState::waiting_for_fresh_command;
+  return transport_->isOpen();
+}
+
+bool SerialIoWorker::isReadyForMotion() const
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return state_ == SerialConnectionState::ready;
 }
 
 SerialWorkerStatus SerialIoWorker::status() const
@@ -222,8 +227,7 @@ SerialWorkerStatus SerialIoWorker::status() const
   return SerialWorkerStatus{
     state_,
     transport_->isOpen(),
-    state_ == SerialConnectionState::ready ||
-    state_ == SerialConnectionState::waiting_for_fresh_command,
+    state_ == SerialConnectionState::ready,
     latest_encoder_sample_.has_value() || last_encoder_sample_.has_value(),
     config_.require_fresh_command_after_reconnect,
     latest_encoder_sample_ ? latest_encoder_sample_->timestamp :

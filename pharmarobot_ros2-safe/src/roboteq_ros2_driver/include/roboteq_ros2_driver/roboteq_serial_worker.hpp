@@ -117,7 +117,8 @@ public:
   void invalidateCommands();
   std::optional<EncoderSample> takeLatestEncoderSample();
   uint64_t commandSequence() const;
-  bool isReady() const;
+  bool isConnected() const;
+  bool isReadyForMotion() const;
   SerialWorkerStatus status() const;
 
 private:

@@ -28,6 +28,7 @@ struct FakeTransportState
   int open_calls{0};
   int close_calls{0};
   std::chrono::milliseconds write_delay{0};
+  std::chrono::milliseconds query_delay{0};
   std::vector<std::vector<std::string>> write_batches;
   std::vector<std::string> queries;
   std::vector<std::string> logs;
@@ -94,6 +95,9 @@ public:
     std::string & error) override
   {
     recordThread();
+    if (state_->query_delay.count() > 0) {
+      std::this_thread::sleep_for(state_->query_delay);
+    }
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->queries.push_back(command);
     if (command == state_->failing_query) {
@@ -189,6 +193,30 @@ bool waitForCommand(
 bool isStopBatch(const std::vector<std::string> & batch)
 {
   return batch == std::vector<std::string>{"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"};
+}
+
+driver::SerialWorkerStatus waitForWorkerState(
+  const driver::SerialIoWorker & worker,
+  driver::SerialConnectionState expected_state,
+  std::chrono::milliseconds timeout = 500ms)
+{
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  driver::SerialWorkerStatus status;
+  while (std::chrono::steady_clock::now() < deadline) {
+    status = worker.status();
+    if (status.connection_state == expected_state) {
+      return status;
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  return status;
+}
+
+void expectReadinessConsistent(const driver::SerialIoWorker & worker)
+{
+  const auto status = worker.status();
+  EXPECT_EQ(worker.isConnected(), status.transport_open);
+  EXPECT_EQ(worker.isReadyForMotion(), status.ready_for_motion);
 }
 
 std::string runConfigurationFailure(
@@ -386,6 +414,94 @@ TEST(SerialIoWorker, OnlyWorkerThreadAccessesTransport)
   }
 }
 
+TEST(SerialIoWorkerReadiness, DisconnectedIsNotConnectedOrMotionReady)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), workerConfig());
+
+  const auto status = worker.status();
+
+  EXPECT_EQ(status.connection_state, driver::SerialConnectionState::disconnected);
+  EXPECT_FALSE(worker.isConnected());
+  EXPECT_FALSE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+}
+
+TEST(SerialIoWorkerReadiness, ConnectedConfiguringIsNotMotionReady)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  state->query_delay = 200ms;
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  const auto status = waitForWorkerState(worker, driver::SerialConnectionState::configuring);
+  worker.stop();
+
+  ASSERT_EQ(status.connection_state, driver::SerialConnectionState::configuring);
+  EXPECT_TRUE(status.transport_open);
+  EXPECT_FALSE(status.ready_for_motion);
+}
+
+TEST(SerialIoWorkerReadiness, WaitingForFreshCommandIsConnectedButNotMotionReady)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  const auto status = waitForWorkerState(
+    worker, driver::SerialConnectionState::waiting_for_fresh_command);
+
+  EXPECT_EQ(status.connection_state, driver::SerialConnectionState::waiting_for_fresh_command);
+  EXPECT_TRUE(worker.isConnected());
+  EXPECT_FALSE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+  worker.stop();
+}
+
+TEST(SerialIoWorkerReadiness, FreshCommandTransitionsWaitingWorkerToMotionReady)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  worker.submitCommand(0.5, 0.5);
+  const auto status = waitForWorkerState(worker, driver::SerialConnectionState::ready);
+
+  EXPECT_EQ(status.connection_state, driver::SerialConnectionState::ready);
+  EXPECT_TRUE(worker.isConnected());
+  EXPECT_TRUE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+  worker.stop();
+}
+
+TEST(SerialIoWorkerReadiness, FullyReadyWithoutFreshCommandGateIsMotionReady)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  config.require_fresh_command_after_reconnect = false;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  const auto status = waitForWorkerState(worker, driver::SerialConnectionState::ready);
+
+  EXPECT_EQ(status.connection_state, driver::SerialConnectionState::ready);
+  EXPECT_TRUE(worker.isConnected());
+  EXPECT_TRUE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+  worker.stop();
+}
+
 TEST(SerialIoWorker, SubmitCommandDoesNotBlockDuringSlowSerialWrite)
 {
   auto state = std::make_shared<FakeTransportState>();
@@ -519,4 +635,43 @@ TEST(SerialIoWorker, ReconnectRequiresFreshCommandAfterFailure)
       [](const auto & batch) {
         return std::find(batch.begin(), batch.end(), "!S 1 30\r") != batch.end();
       }));
+}
+
+TEST(SerialIoWorkerReadiness, ReconnectReturnsToWaitingBeforeFreshCommandCanResumeMotion)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->fail_next_write = true;
+  }
+  worker.submitCommand(1.0, 1.0);
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::unhealthy).connection_state,
+    driver::SerialConnectionState::unhealthy);
+  const auto reconnected_status = waitForWorkerState(
+    worker, driver::SerialConnectionState::waiting_for_fresh_command);
+
+  EXPECT_EQ(
+    reconnected_status.connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  EXPECT_TRUE(worker.isConnected());
+  EXPECT_FALSE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+
+  worker.submitCommand(0.5, 0.5);
+  const auto ready_status = waitForWorkerState(worker, driver::SerialConnectionState::ready);
+
+  EXPECT_EQ(ready_status.connection_state, driver::SerialConnectionState::ready);
+  EXPECT_TRUE(worker.isReadyForMotion());
+  expectReadinessConsistent(worker);
+  worker.stop();
 }
