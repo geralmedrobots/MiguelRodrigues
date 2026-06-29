@@ -29,6 +29,7 @@
 
 #include <climits>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -98,6 +99,10 @@ std::optional<IntegrationResult> OdometryIntegrator::integrate_channel_sample(
     channel_1_ticks, channel_2_ticks, channel_1, channel_2,
     encoder_sign_1, encoder_sign_2);
   if (!ticks.has_value()) {
+    return std::nullopt;
+  }
+
+  if (twist_initialized_ && (!std::isfinite(dt) || dt <= 0.0)) {
     return std::nullopt;
   }
 

@@ -1,10 +1,40 @@
+// Copyright 2026 Medrobots
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    * Redistributions of source code must retain the above copyright
+//      notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above copyright
+//      notice, this list of conditions and the following disclaimer in the
+//      documentation and/or other materials provided with the distribution.
+//    * Neither the name of the copyright holder nor the names of its
+//      contributors may be used to endorse or promote products derived from
+//      this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
 #include <gtest/gtest.h>
 
 #include <climits>
+#include <cmath>
+#include <limits>
 
 #include "roboteq_ros2_driver/roboteq_odometry.hpp"
 
 namespace odometry = roboteq_ros2_driver::odometry;
+constexpr double kPi = 3.14159265358979323846;
 
 TEST(RoboteqOdometry, MapsDefaultChannelsWithExplicitPositiveEncoderSigns)
 {
@@ -62,22 +92,45 @@ TEST(RoboteqOdometry, RejectsInvalidEncoderSignsAndChannelMappings)
       INT_MIN, 20, "right", "left", -1, -1).has_value());
 }
 
-TEST(RoboteqOdometry, IntegratesForwardMotionWithPositiveCounts)
+TEST(RoboteqOdometry, HandlesFirstSampleWithZeroTwistAndIntegratesPose)
 {
   odometry::OdometryIntegrator integrator;
   integrator.init(0.1, 0.5, 100);
 
   const auto result = integrator.integrate_channel_sample(
-    10, 10, 1.0, "right", "left");
+    10, 10, 0.0, "right", "left");
 
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->ticks.left_ticks, 10);
   EXPECT_EQ(result->ticks.right_ticks, 10);
-  EXPECT_NEAR(result->pose.x, 2.0 * 3.14159265358979323846 * 0.1 * 0.1, 1e-12);
+  EXPECT_NEAR(result->pose.x, 2.0 * kPi * 0.1 * 0.1, 1e-12);
   EXPECT_DOUBLE_EQ(result->pose.y, 0.0);
   EXPECT_DOUBLE_EQ(result->pose.theta, 0.0);
   EXPECT_DOUBLE_EQ(result->twist.linear_x, 0.0);
   EXPECT_DOUBLE_EQ(result->twist.angular_z, 0.0);
+}
+
+TEST(RoboteqOdometry, RejectsInvalidDtAfterFirstSample)
+{
+  odometry::OdometryIntegrator integrator;
+  integrator.init(0.1, 0.5, 100);
+
+  ASSERT_TRUE(integrator.integrate_channel_sample(10, 10, 0.0, "right", "left").has_value());
+
+  EXPECT_FALSE(integrator.integrate_channel_sample(20, 20, 0.0, "right", "left").has_value());
+  EXPECT_FALSE(integrator.integrate_channel_sample(20, 20, -1.0, "right", "left").has_value());
+  EXPECT_FALSE(
+    integrator.integrate_channel_sample(
+      20, 20, std::numeric_limits<double>::infinity(), "right", "left").has_value());
+
+  const auto result = integrator.integrate_channel_sample(30, 30, 2.0, "right", "left");
+
+  ASSERT_TRUE(result.has_value());
+  const double first_sample_distance = 2.0 * kPi * 0.1 * 0.1;
+  const double second_sample_distance = 2.0 * kPi * 0.1 * 0.3;
+  EXPECT_NEAR(result->pose.x, first_sample_distance + second_sample_distance, 1e-12);
+  EXPECT_DOUBLE_EQ(result->pose.y, 0.0);
+  EXPECT_DOUBLE_EQ(result->pose.theta, 0.0);
 }
 
 TEST(RoboteqOdometry, IntegratesReverseMotionWithNegativeEncoderSign)
@@ -110,16 +163,18 @@ TEST(RoboteqOdometry, IntegratesTurningMotionAndRotationDirection)
   EXPECT_NE(result->twist.angular_z, 0.0);
 }
 
-TEST(RoboteqOdometry, CalculatesTwistAfterFirstSample)
+TEST(RoboteqOdometry, CalculatesExpectedTwistForKnownTickDeltaAndDuration)
 {
   odometry::OdometryIntegrator integrator;
   integrator.init(0.1, 0.5, 100);
 
-  ASSERT_TRUE(integrator.integrate_channel_sample(10, 10, 1.0, "right", "left").has_value());
+  ASSERT_TRUE(integrator.integrate_channel_sample(10, 10, 0.0, "right", "left").has_value());
   const auto result = integrator.integrate_channel_sample(
-    10, 10, 2.0, "right", "left");
+    20, 20, 2.0, "right", "left");
 
   ASSERT_TRUE(result.has_value());
-  EXPECT_NEAR(result->twist.linear_x, (2.0 * 3.14159265358979323846 * 0.1 * 0.1) / 2.0, 1e-12);
+  const double expected_distance = 2.0 * kPi * 0.1 * 0.2;
+  EXPECT_NEAR(result->twist.linear_x, expected_distance / 2.0, 1e-12);
   EXPECT_DOUBLE_EQ(result->twist.angular_z, 0.0);
+  EXPECT_NEAR(result->pose.x, (2.0 * kPi * 0.1 * 0.1) + expected_distance, 1e-12);
 }

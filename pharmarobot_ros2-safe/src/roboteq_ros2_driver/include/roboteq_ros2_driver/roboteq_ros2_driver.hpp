@@ -33,6 +33,7 @@
 
 #include <climits>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <iostream>
@@ -87,7 +88,8 @@ private:
   float odom_y{};
   float odom_yaw{};
 
-  uint32_t odom_last_time{};
+  std::chrono::steady_clock::time_point odom_last_time{};
+  bool odom_last_time_valid_{false};
 
 
   // settings

@@ -46,9 +46,6 @@
 
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 
-#define DELTAT(_nowtime, _thentime) \
-  ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
-
 #define _CMDVEL_DEBUG
 
 // #define _VERBOSE
@@ -161,13 +158,6 @@ void log_diagnostics_records(
 }
 }  // namespace
 
-uint32_t millis()
-{
-  auto now = std::chrono::system_clock::now();
-  auto duration = now.time_since_epoch();
-  return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-}
-
 namespace Roboteq
 {
 Roboteq::Roboteq()
@@ -260,7 +250,7 @@ void Roboteq::initialize_valid_configuration()
   odom_x = 0.0;
   odom_y = 0.0;
   odom_yaw = 0.0;
-  odom_last_time = 0;
+  odom_last_time_valid_ = false;
 
   wheel_circumference = 2 * PI * wheel_radius;
 
@@ -502,11 +492,6 @@ void Roboteq::odom_setup()
   // start encoder streaming
   RCLCPP_INFO_STREAM(this->get_logger(), "covariance set");
   RCLCPP_INFO_STREAM(this->get_logger(), "odometry polling will be handled by serial worker");
-
-  odom_last_time = millis();
-#ifdef _ODOM_SENSORS
-  current_last_time = millis();
-#endif
 }
 
 // Odom msg streams
@@ -524,12 +509,17 @@ void Roboteq::odom_loop()
   }
 
 
-  // uint32_t nowtime = millis();
-
-
-  uint32_t nowtime = millis();
-  double dt = static_cast<float>(DELTAT(nowtime, odom_last_time)) / 1000.0;
-  odom_last_time = nowtime;
+  const auto now = std::chrono::steady_clock::now();
+  double dt = 0.0;
+  if (odom_last_time_valid_) {
+    dt = std::chrono::duration<double>(now - odom_last_time).count();
+    if (!std::isfinite(dt) || dt <= 0.0) {
+      return;
+    }
+  } else {
+    odom_last_time_valid_ = true;
+  }
+  odom_last_time = now;
 
   // RCLCPP_INFO(this->get_logger(), "Odom Delta Time: %f", dt);
 
