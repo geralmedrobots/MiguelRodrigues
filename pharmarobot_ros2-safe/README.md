@@ -158,6 +158,11 @@ ports, and ROS domain, then install the NUC services:
 ./deployment/install_services.sh
 ```
 
+The container start script bind-mounts the complete host `/dev/input` directory
+and permits input character devices (`c 13:* rwm`). This keeps joystick access
+across reconnects and container recreation without relying on a changing
+`/dev/input/eventN` path or privileged mode.
+
 Starting or restarting these services can operate robot runtime nodes and
 requires explicit hardware/runtime approval:
 

@@ -16,7 +16,6 @@ docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 ROBOTEQ_DEVICE="${ROBOTEQ_PORT:-/dev/roboteq}"
 FRONT_DEVICE="${FRONT_PORT:-/dev/lidar_front}"
 BACK_DEVICE="${BACK_PORT:-/dev/lidar_back}"
-JOYSTICK_DEVICE="${JOYSTICK_PORT:-/dev/input/js0}"
 
 DEVICE_ARGS=()
 map_device() {
@@ -43,12 +42,13 @@ map_device() {
 map_device "$ROBOTEQ_DEVICE" /dev/roboteq required
 map_device "$FRONT_DEVICE" /dev/lidar_front optional
 map_device "$BACK_DEVICE" /dev/lidar_back optional
-map_device "$JOYSTICK_DEVICE" /dev/input/js0 optional
 
 docker run -d \
   --name "$CONTAINER" \
   --network host \
   "${DEVICE_ARGS[@]}" \
+  --mount type=bind,src=/dev/input,dst=/dev/input \
+  --device-cgroup-rule 'c 13:* rwm' \
   -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID_VALUE" \
   -e ROS_LOCALHOST_ONLY=0 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
