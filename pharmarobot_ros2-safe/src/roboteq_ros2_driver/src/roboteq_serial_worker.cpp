@@ -1,3 +1,30 @@
+// Copyright 2026 Medrobots
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    * Redistributions of source code must retain the above copyright
+//      notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above copyright
+//      notice, this list of conditions and the following disclaimer in the
+//      documentation and/or other materials provided with the distribution.
+//    * Neither the name of the copyright holder nor the names of its
+//      contributors may be used to endorse or promote products derived from
+//      this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
 #include <charconv>
@@ -212,7 +239,7 @@ uint64_t SerialIoWorker::commandSequence() const
 bool SerialIoWorker::isConnected() const
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
-  return transport_->isOpen();
+  return transport_open_;
 }
 
 bool SerialIoWorker::isReadyForMotion() const
@@ -226,7 +253,7 @@ SerialWorkerStatus SerialIoWorker::status() const
   std::lock_guard<std::mutex> lock(state_mutex_);
   return SerialWorkerStatus{
     state_,
-    transport_->isOpen(),
+    transport_open_,
     state_ == SerialConnectionState::ready,
     latest_encoder_sample_.has_value() || last_encoder_sample_.has_value(),
     config_.require_fresh_command_after_reconnect,
@@ -236,6 +263,7 @@ SerialWorkerStatus SerialIoWorker::status() const
     latest_encoder_sample_ ? latest_encoder_sample_->sequence :
     (last_encoder_sample_ ? last_encoder_sample_->sequence : 0),
     latest_submitted_sequence_,
+    status_update_sequence_,
   };
 }
 
@@ -275,6 +303,7 @@ void SerialIoWorker::run()
         applied_stopped_ = true;
         state_ = config_.require_fresh_command_after_reconnect ?
           SerialConnectionState::waiting_for_fresh_command : SerialConnectionState::ready;
+        status_update_sequence_++;
       }
       next_encoder_poll = std::chrono::steady_clock::now() + config_.encoder_poll_period;
       next_reconnect = std::chrono::steady_clock::time_point::max();
@@ -319,6 +348,7 @@ void SerialIoWorker::run()
       applied_stopped_ =
         std::abs(command.channel_1_mps) < 1e-12 && std::abs(command.channel_2_mps) < 1e-12;
       state_ = SerialConnectionState::ready;
+      status_update_sequence_++;
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -347,6 +377,9 @@ void SerialIoWorker::run()
   if (transport_->isOpen()) {
     sendStop("driver shutdown", ignored_error);
     transport_->close();
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    transport_open_ = false;
+    status_update_sequence_++;
   }
 }
 
@@ -355,6 +388,7 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_ = SerialConnectionState::connecting;
+    status_update_sequence_++;
   }
   if (config_.log_callback) {
     config_.log_callback("Roboteq serial worker connecting");
@@ -364,6 +398,11 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
       error = "connectAndValidate: phase=connection category=transport_error "
         "operation=serial_open reason=" + visible_text(error);
       return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      transport_open_ = true;
+      status_update_sequence_++;
     }
     if (!sendStop("startup/reconnect", error)) {
       error = "connectAndValidate: phase=connection category=transport_error "
@@ -378,6 +417,7 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     state_ = SerialConnectionState::configuring;
+    status_update_sequence_++;
   }
   if (config_.log_callback) {
     config_.log_callback("Roboteq serial worker configuring and validating controller");
@@ -506,6 +546,7 @@ bool SerialIoWorker::pollEncoder(std::string & error)
     std::chrono::steady_clock::now(),
     encoder_sequence_,
     true};
+  status_update_sequence_++;
   return true;
 }
 
@@ -551,11 +592,15 @@ void SerialIoWorker::markFailure(const std::string & error)
     sendStop("serial failure", ignored_error);
   }
   transport_->close();
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  state_ = SerialConnectionState::unhealthy;
-  applied_stopped_ = true;
-  desired_command_.valid = false;
-  minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    state_ = SerialConnectionState::unhealthy;
+    transport_open_ = false;
+    applied_stopped_ = true;
+    desired_command_.valid = false;
+    minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
+    status_update_sequence_++;
+  }
 }
 
 std::vector<std::string> SerialIoWorker::buildMotorCommands(

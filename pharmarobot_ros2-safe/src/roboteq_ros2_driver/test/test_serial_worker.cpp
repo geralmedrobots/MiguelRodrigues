@@ -1,6 +1,35 @@
+// Copyright 2026 Medrobots
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    * Redistributions of source code must retain the above copyright
+//      notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above copyright
+//      notice, this list of conditions and the following disclaimer in the
+//      documentation and/or other materials provided with the distribution.
+//    * Neither the name of the copyright holder nor the names of its
+//      contributors may be used to endorse or promote products derived from
+//      this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+
 #include <algorithm>
 #include <exception>
 #include <memory>
@@ -22,7 +51,9 @@ namespace
 struct FakeTransportState
 {
   mutable std::mutex mutex;
-  bool open{false};
+  std::atomic<bool> open{false};
+  std::atomic<int> forbidden_is_open_calls{0};
+  std::thread::id forbidden_is_open_thread{};
   bool fail_next_write{false};
   std::string encoder_response{"CR=10:20"};
   int open_calls{0};
@@ -67,8 +98,10 @@ public:
 
   bool isOpen() const noexcept override
   {
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    return state_->open;
+    if (std::this_thread::get_id() == state_->forbidden_is_open_thread) {
+      state_->forbidden_is_open_calls.fetch_add(1);
+    }
+    return state_->open.load();
   }
 
   bool sendCommands(const std::vector<std::string> & commands, std::string & error) override
@@ -193,6 +226,15 @@ bool waitForCommand(
 bool isStopBatch(const std::vector<std::string> & batch)
 {
   return batch == std::vector<std::string>{"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"};
+}
+
+bool hasEncoderQuery(const std::shared_ptr<FakeTransportState> & state)
+{
+  std::lock_guard<std::mutex> lock(state->mutex);
+  return std::find(
+    state->queries.begin(),
+    state->queries.end(),
+    "?CR\r") != state->queries.end();
 }
 
 driver::SerialWorkerStatus waitForWorkerState(
@@ -414,6 +456,26 @@ TEST(SerialIoWorker, OnlyWorkerThreadAccessesTransport)
   }
 }
 
+TEST(SerialIoWorker, StatusAndReadinessUseCachedTransportSnapshot)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  state->forbidden_is_open_thread = std::this_thread::get_id();
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), workerConfig());
+
+  worker.start();
+  const auto connected_status = waitForWorkerState(
+    worker, driver::SerialConnectionState::waiting_for_fresh_command);
+  ASSERT_TRUE(connected_status.transport_open);
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_TRUE(worker.status().transport_open);
+    EXPECT_TRUE(worker.isConnected());
+  }
+  worker.stop();
+
+  EXPECT_EQ(state->forbidden_is_open_calls.load(), 0);
+  EXPECT_FALSE(worker.status().transport_open);
+}
+
 TEST(SerialIoWorkerReadiness, DisconnectedIsNotConnectedOrMotionReady)
 {
   auto state = std::make_shared<FakeTransportState>();
@@ -539,6 +601,31 @@ TEST(SerialIoWorker, PollsEncodersIntoLatestSample)
   EXPECT_TRUE(sample->valid);
   EXPECT_EQ(sample->channel_1, 10);
   EXPECT_EQ(sample->channel_2, 20);
+}
+
+TEST(SerialIoWorkerDiagnostics, EncoderPollUpdatesBoundedStatusSnapshot)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  const auto connected_status = waitForWorkerState(
+    worker, driver::SerialConnectionState::waiting_for_fresh_command);
+  driver::SerialWorkerStatus encoder_status;
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    encoder_status = worker.status();
+    if (encoder_status.latest_encoder_sequence > 0) {
+      break;
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  worker.stop();
+
+  EXPECT_TRUE(hasEncoderQuery(state));
+  EXPECT_GT(encoder_status.latest_encoder_sequence, 0u);
+  EXPECT_GT(encoder_status.update_sequence, connected_status.update_sequence);
 }
 
 TEST(SerialIoWorker, LatestCommandWinsWhileWorkerIsBusy)

@@ -63,6 +63,8 @@ struct DriverParameters
   double diagnostics_publish_rate_hz{0.0};
   std::string channel_1;
   std::string channel_2;
+  double encoder_freshness_warn_s{0.25};
+  double encoder_freshness_error_s{1.0};
 };
 
 struct ValidationError
@@ -72,6 +74,9 @@ struct ValidationError
 };
 
 std::optional<ValidationError> validate(const DriverParameters & parameters);
+
+std::optional<ValidationError> validate_encoder_freshness_thresholds(
+  double warn_s, double error_s);
 
 // The callback is the startup boundary. Callers must perform all subsystem and ROS
 // entity initialization inside it. It is never invoked for invalid parameters.

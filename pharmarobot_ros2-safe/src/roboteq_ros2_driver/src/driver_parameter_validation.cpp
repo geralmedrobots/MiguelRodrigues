@@ -91,6 +91,32 @@ bool is_channel_name(const std::string & value)
 
 }  // namespace
 
+std::optional<ValidationError> validate_encoder_freshness_thresholds(
+  double warn_s, double error_s)
+{
+  if (const auto error = positive_finite("encoder_freshness_warn_s", warn_s)) {
+    return error;
+  }
+  if (const auto error = positive_finite("encoder_freshness_error_s", error_s)) {
+    return error;
+  }
+  if (error_s <= warn_s) {
+    return ValidationError{
+      "encoder_freshness_error_s", "must be greater than encoder_freshness_warn_s"};
+  }
+  const double max_seconds_for_milliseconds =
+    static_cast<double>(std::numeric_limits<int>::max()) / 1000.0;
+  if (warn_s > max_seconds_for_milliseconds) {
+    return ValidationError{
+      "encoder_freshness_warn_s", "exceeds the software conversion limit for milliseconds"};
+  }
+  if (error_s > max_seconds_for_milliseconds) {
+    return ValidationError{
+      "encoder_freshness_error_s", "exceeds the software conversion limit for milliseconds"};
+  }
+  return std::nullopt;
+}
+
 std::optional<ValidationError> validate(const DriverParameters & p)
 {
   if (p.port.empty()) {
@@ -181,6 +207,11 @@ std::optional<ValidationError> validate(const DriverParameters & p)
   }
   if (const auto error = positive_finite(
       "diagnostics_publish_rate_hz", p.diagnostics_publish_rate_hz))
+  {
+    return error;
+  }
+  if (const auto error = validate_encoder_freshness_thresholds(
+      p.encoder_freshness_warn_s, p.encoder_freshness_error_s))
   {
     return error;
   }

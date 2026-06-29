@@ -386,6 +386,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_roboteq_diagnostics
     roboteq_diagnostics
+    roboteq_driver_parameter_validation
   )
 
   ament_add_gtest(test_roboteq_odometry

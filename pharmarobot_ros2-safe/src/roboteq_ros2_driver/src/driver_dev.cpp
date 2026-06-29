@@ -1,28 +1,53 @@
+// Copyright 2026 Medrobots
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    * Redistributions of source code must retain the above copyright
+//      notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above copyright
+//      notice, this list of conditions and the following disclaimer in the
+//      documentation and/or other materials provided with the distribution.
+//    * Neither the name of the copyright holder nor the names of its
+//      contributors may be used to endorse or promote products derived from
+//      this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
 #include <signal.h>
 #include <tf2/LinearMath/Quaternion.h>
 
-#include <optional>
-
-#include <cmath>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
-// dependencies for ROS
-#include <string>
-#include <sstream>
+#include <rclcpp/clock.hpp>
+#include <rclcpp/rclcpp.hpp>
 
-#include "rclcpp/rclcpp.hpp"
-#include "rclcpp/clock.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
 
 #define DELTAT(_nowtime, _thentime) \
-    ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
+  ((_thentime > _nowtime) ? ((0xffffffff - _thentime) + _nowtime) : (_nowtime - _thentime))
 
 #define _CMDVEL_DEBUG
 
@@ -33,12 +58,9 @@
 #define _ODOM_DEBUG
 
 
+#define ROBOTEQ_CYCLE_PERIOD 50ms  // ms
+#define ROBORTEQ_WRITING_TIMEOUT 5  //
 
-#define ROBOTEQ_CYCLE_PERIOD 50ms // ms
-#define ROBORTEQ_WRITING_TIMEOUT 5 //
-
-
-#include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/command_watchdog.hpp"
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
@@ -46,9 +68,8 @@
 #include "roboteq_ros2_driver/roboteq_command_conversion.hpp"
 #include "roboteq_ros2_driver/roboteq_configuration.hpp"
 #include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
+#include "roboteq_ros2_driver/roboteq_ros2_driver.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
-
-
 
 namespace
 {
@@ -121,6 +142,22 @@ sanitize_covariance_config_with_logging(
       config.twist_angular_z,
       defaults.twist_angular_z),
   };
+}
+
+void log_diagnostics_records(
+  const rclcpp::Logger & logger,
+  const std::vector<roboteq_ros2_driver::DiagnosticsLogRecord> & records)
+{
+  using diagnostic_msgs::msg::DiagnosticStatus;
+  for (const auto & record : records) {
+    if (record.level >= DiagnosticStatus::ERROR) {
+      RCLCPP_ERROR(logger, "%s", record.message.c_str());
+    } else if (record.level == DiagnosticStatus::WARN) {
+      RCLCPP_WARN(logger, "%s", record.message.c_str());
+    } else {
+      RCLCPP_INFO(logger, "%s", record.message.c_str());
+    }
+  }
 }
 }  // namespace
 
@@ -362,6 +399,8 @@ Roboteq::validation_parameters() const
     diagnostics_publish_rate_hz_,
     channel_1,
     channel_2,
+    encoder_freshness_warn_s_,
+    encoder_freshness_error_s_,
   };
 }
 
@@ -378,9 +417,12 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
     return;
   }
 
-  last_cmd_time_ = this->now();
-  received_first_cmd_ = true;
-  command_timeout_logged_ = false;
+  {
+    std::lock_guard<std::mutex> lock(command_state_mutex_);
+    last_cmd_time_ = this->now();
+    received_first_cmd_ = true;
+    command_timeout_logged_ = false;
+  }
 
   const auto wheel_speeds = roboteq_ros2_driver::command_conversion::twist_to_wheel_speeds(
     twist_msg->linear.x,
@@ -427,6 +469,7 @@ void Roboteq::cmdvel_callback(const geometry_msgs::msg::Twist::SharedPtr twist_m
   serial_worker_->submitCommand(
     signed_channel_speeds->channel_1_mps,
     signed_channel_speeds->channel_2_mps);
+  diagnostics_loop();
 }
 
 void Roboteq::odom_setup()
@@ -566,14 +609,21 @@ void Roboteq::odom_publish(const roboteq_ros2_driver::odometry::IntegrationResul
 
 void Roboteq::command_watchdog_loop()
 {
-  const double command_age_s = received_first_cmd_ ?
-    (this->now() - last_cmd_time_).seconds() : 0.0;
-  if (roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
-      received_first_cmd_, command_timeout_logged_, command_age_s, cmd_timeout_s_))
+  bool should_log_timeout = false;
   {
-    command_timeout_logged_ = true;
+    std::lock_guard<std::mutex> lock(command_state_mutex_);
+    const double command_age_s = received_first_cmd_ ?
+      (this->now() - last_cmd_time_).seconds() : 0.0;
+    should_log_timeout = roboteq_ros2_driver::command_watchdog::should_send_timeout_stop(
+      received_first_cmd_, command_timeout_logged_, command_age_s, cmd_timeout_s_);
+    if (should_log_timeout) {
+      command_timeout_logged_ = true;
+    }
+  }
+  if (should_log_timeout) {
     RCLCPP_WARN(this->get_logger(), "cmd_vel timeout; serial worker will enforce stop");
   }
+  diagnostics_loop();
 }
 
 void Roboteq::diagnostics_loop()
@@ -581,15 +631,12 @@ void Roboteq::diagnostics_loop()
   if (!diagnostics_pub_ || !serial_worker_) {
     return;
   }
+  std::lock_guard<std::mutex> publication_lock(diagnostics_publication_mutex_);
 
   const auto worker_status = serial_worker_->status();
   roboteq_ros2_driver::DiagnosticsState state;
   state.serial_connected = worker_status.transport_open;
   state.serial_ready = worker_status.ready_for_motion;
-  state.command_active = received_first_cmd_;
-  state.command_timed_out = received_first_cmd_ &&
-    (this->now() - last_cmd_time_).seconds() >= cmd_timeout_s_;
-  state.command_timeout_logged = command_timeout_logged_;
   state.encoder_sample_available = worker_status.have_encoder_sample;
   state.worker_status = worker_status;
   if (worker_status.have_encoder_sample) {
@@ -597,26 +644,42 @@ void Roboteq::diagnostics_loop()
       std::chrono::steady_clock::now() - worker_status.latest_encoder_timestamp);
     state.encoder_age = age;
   }
-  if (received_first_cmd_) {
-    state.command_age = std::chrono::milliseconds(
-      static_cast<int>((this->now() - last_cmd_time_).seconds() * 1000.0));
+  {
+    std::lock_guard<std::mutex> lock(command_state_mutex_);
+    state.command_active = received_first_cmd_;
+    if (received_first_cmd_) {
+      const auto command_age_s = (this->now() - last_cmd_time_).seconds();
+      state.command_timed_out = command_age_s >= cmd_timeout_s_;
+      state.command_age = std::chrono::milliseconds(
+        static_cast<int>(command_age_s * 1000.0));
+    }
   }
 
   roboteq_ros2_driver::DiagnosticsConfig config;
   config.publish_period = std::chrono::milliseconds(
     static_cast<int>(std::max(1.0, 1000.0 / std::max(0.001, diagnostics_publish_rate_hz_))));
   config.encoder_freshness_warn = std::chrono::milliseconds(
-    static_cast<int>(std::max(1.0, encoder_freshness_warn_s_ * 1000.0)));
+    static_cast<int>(encoder_freshness_warn_s_ * 1000.0));
   config.encoder_freshness_error = std::chrono::milliseconds(
-    static_cast<int>(std::max(
-      static_cast<double>(config.encoder_freshness_warn.count() + 1),
-      encoder_freshness_error_s_ * 1000.0)));
+    static_cast<int>(encoder_freshness_error_s_ * 1000.0));
+  config.command_watchdog_error = std::chrono::milliseconds(
+    static_cast<int>(std::max(1.0, cmd_timeout_s_ * 1000.0)));
+  config.command_watchdog_warn = std::chrono::milliseconds(
+    static_cast<int>(std::max<int64_t>(1, config.command_watchdog_error.count() / 2)));
 
   const auto msg = roboteq_ros2_driver::buildDiagnosticsArray(this->now(), state, config);
-  if (!diagnostics_state_.shouldPublish(msg)) {
+  roboteq_ros2_driver::DiagnosticsPublicationDecision decision;
+  decision = diagnostics_state_.evaluate(
+    msg,
+    std::chrono::steady_clock::now(),
+    config.publish_period);
+  if (!decision.publish) {
     return;
   }
   diagnostics_pub_->publish(msg);
+  log_diagnostics_records(
+    this->get_logger(),
+    roboteq_ros2_driver::buildDiagnosticsLogRecords(msg));
 }
 
 Roboteq::~Roboteq()
@@ -654,7 +717,6 @@ void Roboteq::start_serial_worker()
   worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
       RCLCPP_WARN(logger, "%s", message.c_str());
     };
-
   serial_worker_ = std::make_unique<roboteq_ros2_driver::SerialIoWorker>(
     std::make_unique<roboteq_ros2_driver::RoboteqSerialTransport>(transport_config),
     worker_config);

@@ -85,6 +85,7 @@ struct SerialWorkerStatus
   std::chrono::steady_clock::time_point latest_encoder_timestamp{};
   uint64_t latest_encoder_sequence{0};
   uint64_t command_sequence{0};
+  uint64_t update_sequence{0};
 };
 
 struct SerialWorkerConfig
@@ -146,11 +147,13 @@ private:
   uint64_t applied_sequence_{0};
   uint64_t minimum_motion_sequence_{0};
   bool applied_stopped_{true};
+  bool transport_open_{false};
   bool stop_requested_{false};
   bool worker_started_{false};
   std::optional<EncoderSample> latest_encoder_sample_;
   std::optional<EncoderSample> last_encoder_sample_;
   uint64_t encoder_sequence_{0};
+  uint64_t status_update_sequence_{0};
   SerialConnectionState state_{SerialConnectionState::disconnected};
   std::thread worker_thread_;
 };
