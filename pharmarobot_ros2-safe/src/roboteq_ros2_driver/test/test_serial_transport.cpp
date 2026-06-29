@@ -30,8 +30,9 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
-#include <chrono>
 #include <cstdlib>
+
+#include <chrono>
 #include <string>
 #include <thread>
 
