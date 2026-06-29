@@ -28,6 +28,7 @@
 #ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ODOMETRY_HPP_
 #define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ODOMETRY_HPP_
 
+#include <chrono>
 #include <optional>
 #include <string>
 
@@ -59,6 +60,12 @@ std::optional<WheelTickDelta> map_channel_encoder_sample_to_wheels(
   const std::string & channel_2,
   int encoder_sign_1 = 1,
   int encoder_sign_2 = 1);
+
+bool is_valid_elapsed_interval(double dt);
+
+std::optional<double> monotonic_elapsed_interval(
+  std::chrono::steady_clock::time_point previous,
+  std::chrono::steady_clock::time_point current);
 
 class OdometryIntegrator
 {

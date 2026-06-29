@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <limits>
@@ -110,6 +111,19 @@ TEST(RoboteqOdometry, HandlesFirstSampleWithZeroTwistAndIntegratesPose)
   EXPECT_DOUBLE_EQ(result->twist.angular_z, 0.0);
 }
 
+TEST(RoboteqOdometry, FirstSampleIgnoresInvalidDtAndStillProducesZeroTwist)
+{
+  odometry::OdometryIntegrator integrator;
+  integrator.init(0.1, 0.5, 100);
+
+  const auto result = integrator.integrate_channel_sample(
+    10, 10, std::numeric_limits<double>::quiet_NaN(), "right", "left");
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_DOUBLE_EQ(result->twist.linear_x, 0.0);
+  EXPECT_DOUBLE_EQ(result->twist.angular_z, 0.0);
+}
+
 TEST(RoboteqOdometry, RejectsInvalidDtAfterFirstSample)
 {
   odometry::OdometryIntegrator integrator;
@@ -119,6 +133,9 @@ TEST(RoboteqOdometry, RejectsInvalidDtAfterFirstSample)
 
   EXPECT_FALSE(integrator.integrate_channel_sample(20, 20, 0.0, "right", "left").has_value());
   EXPECT_FALSE(integrator.integrate_channel_sample(20, 20, -1.0, "right", "left").has_value());
+  EXPECT_FALSE(
+    integrator.integrate_channel_sample(
+      20, 20, std::numeric_limits<double>::quiet_NaN(), "right", "left").has_value());
   EXPECT_FALSE(
     integrator.integrate_channel_sample(
       20, 20, std::numeric_limits<double>::infinity(), "right", "left").has_value());
@@ -163,18 +180,62 @@ TEST(RoboteqOdometry, IntegratesTurningMotionAndRotationDirection)
   EXPECT_NE(result->twist.angular_z, 0.0);
 }
 
-TEST(RoboteqOdometry, CalculatesExpectedTwistForKnownTickDeltaAndDuration)
+TEST(RoboteqOdometry, CalculatesExpectedLinearAndAngularTwistForKnownTickDeltaAndDuration)
 {
   odometry::OdometryIntegrator integrator;
   integrator.init(0.1, 0.5, 100);
 
-  ASSERT_TRUE(integrator.integrate_channel_sample(10, 10, 0.0, "right", "left").has_value());
+  ASSERT_TRUE(integrator.integrate_channel_sample(0, 0, 0.0, "right", "left").has_value());
   const auto result = integrator.integrate_channel_sample(
-    20, 20, 2.0, "right", "left");
+    20, 10, 0.25, "right", "left");
 
   ASSERT_TRUE(result.has_value());
-  const double expected_distance = 2.0 * kPi * 0.1 * 0.2;
-  EXPECT_NEAR(result->twist.linear_x, expected_distance / 2.0, 1e-12);
-  EXPECT_DOUBLE_EQ(result->twist.angular_z, 0.0);
-  EXPECT_NEAR(result->pose.x, (2.0 * kPi * 0.1 * 0.1) + expected_distance, 1e-12);
+  const double meters_per_tick = (2.0 * kPi * 0.1) / 100.0;
+  const double left_distance = meters_per_tick * 10.0;
+  const double right_distance = meters_per_tick * 20.0;
+  const double expected_linear_delta = (left_distance + right_distance) / 2.0;
+  const double expected_angular_delta = (right_distance - left_distance) / 0.5;
+  EXPECT_NEAR(result->twist.linear_x, expected_linear_delta / 0.25, 1e-12);
+  EXPECT_NEAR(result->twist.angular_z, expected_angular_delta / 0.25, 1e-12);
+}
+
+TEST(RoboteqOdometry, ValidatesElapsedIntervals)
+{
+  using namespace std::chrono_literals;
+
+  EXPECT_TRUE(odometry::is_valid_elapsed_interval(1e-12));
+  EXPECT_FALSE(odometry::is_valid_elapsed_interval(0.0));
+  EXPECT_FALSE(odometry::is_valid_elapsed_interval(-1e-12));
+  EXPECT_FALSE(
+    odometry::is_valid_elapsed_interval(std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(
+    odometry::is_valid_elapsed_interval(std::numeric_limits<double>::infinity()));
+
+  const auto start = std::chrono::steady_clock::time_point{};
+  const auto normal = odometry::monotonic_elapsed_interval(start, start + 250ms);
+  ASSERT_TRUE(normal.has_value());
+  EXPECT_DOUBLE_EQ(*normal, 0.25);
+
+  const auto tiny = odometry::monotonic_elapsed_interval(start, start + 1ns);
+  ASSERT_TRUE(tiny.has_value());
+  EXPECT_DOUBLE_EQ(*tiny, 1e-9);
+
+  EXPECT_FALSE(odometry::monotonic_elapsed_interval(start, start).has_value());
+  EXPECT_FALSE(odometry::monotonic_elapsed_interval(start + 10ns, start).has_value());
+}
+
+TEST(RoboteqOdometry, MonotonicElapsedIntervalDependsOnlyOnDuration)
+{
+  using namespace std::chrono_literals;
+
+  const auto epoch_a = std::chrono::steady_clock::time_point{} + 2s;
+  const auto epoch_b = std::chrono::steady_clock::time_point{} + 2000s;
+
+  const auto dt_a = odometry::monotonic_elapsed_interval(epoch_a, epoch_a + 125ms);
+  const auto dt_b = odometry::monotonic_elapsed_interval(epoch_b, epoch_b + 125ms);
+
+  ASSERT_TRUE(dt_a.has_value());
+  ASSERT_TRUE(dt_b.has_value());
+  EXPECT_DOUBLE_EQ(*dt_a, 0.125);
+  EXPECT_DOUBLE_EQ(*dt_b, 0.125);
 }

@@ -512,10 +512,12 @@ void Roboteq::odom_loop()
   const auto now = std::chrono::steady_clock::now();
   double dt = 0.0;
   if (odom_last_time_valid_) {
-    dt = std::chrono::duration<double>(now - odom_last_time).count();
-    if (!std::isfinite(dt) || dt <= 0.0) {
+    const auto elapsed = roboteq_ros2_driver::odometry::monotonic_elapsed_interval(
+      odom_last_time, now);
+    if (!elapsed.has_value()) {
       return;
     }
+    dt = *elapsed;
   } else {
     odom_last_time_valid_ = true;
   }

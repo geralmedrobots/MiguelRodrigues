@@ -76,6 +76,22 @@ std::optional<WheelTickDelta> map_channel_encoder_sample_to_wheels(
   return std::nullopt;
 }
 
+bool is_valid_elapsed_interval(double dt)
+{
+  return std::isfinite(dt) && dt > 0.0;
+}
+
+std::optional<double> monotonic_elapsed_interval(
+  std::chrono::steady_clock::time_point previous,
+  std::chrono::steady_clock::time_point current)
+{
+  const double dt = std::chrono::duration<double>(current - previous).count();
+  if (!is_valid_elapsed_interval(dt)) {
+    return std::nullopt;
+  }
+  return dt;
+}
+
 void OdometryIntegrator::init(
   double wheel_radius,
   double wheelbase,
@@ -102,7 +118,7 @@ std::optional<IntegrationResult> OdometryIntegrator::integrate_channel_sample(
     return std::nullopt;
   }
 
-  if (twist_initialized_ && (!std::isfinite(dt) || dt <= 0.0)) {
+  if (twist_initialized_ && !is_valid_elapsed_interval(dt)) {
     return std::nullopt;
   }
 
