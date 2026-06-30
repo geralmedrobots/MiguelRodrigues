@@ -40,6 +40,8 @@ namespace
 validation::DriverParameters valid_parameters()
 {
   return {
+    "odom",
+    "base_link",
     "/dev/roboteq",
     115200,
     0.0881,
@@ -90,6 +92,51 @@ TEST(DriverParameterValidation, AcceptsProductionConfigurationAndBothExplicitSig
   parameters.encoder_sign_2 = -1;
   parameters.command_angular_sign = 1;
   EXPECT_FALSE(validation::validate(parameters).has_value());
+}
+
+TEST(DriverParameterValidation, AcceptsDistinctValidFrameNamesAndExistingDefaults)
+{
+  auto parameters = valid_parameters();
+  EXPECT_FALSE(validation::validate(parameters).has_value());
+
+  parameters.odom_frame = "map";
+  parameters.base_frame = "base_footprint";
+  EXPECT_FALSE(validation::validate(parameters).has_value());
+
+  parameters.odom_frame = " odom ";
+  parameters.base_frame = " base_link ";
+  EXPECT_FALSE(validation::validate(parameters).has_value());
+}
+
+TEST(DriverParameterValidation, RejectsEmptyAndWhitespaceOnlyFrameNames)
+{
+  auto parameters = valid_parameters();
+  parameters.odom_frame.clear();
+  expect_invalid(parameters, "odom_frame");
+
+  parameters = valid_parameters();
+  parameters.base_frame.clear();
+  expect_invalid(parameters, "base_frame");
+
+  parameters = valid_parameters();
+  parameters.odom_frame = " \t ";
+  expect_invalid(parameters, "odom_frame");
+
+  parameters = valid_parameters();
+  parameters.base_frame = "\n  ";
+  expect_invalid(parameters, "base_frame");
+}
+
+TEST(DriverParameterValidation, RejectsIdenticalFrameNamesAfterTrimming)
+{
+  auto parameters = valid_parameters();
+  parameters.base_frame = "odom";
+  expect_invalid(parameters, "base_frame");
+
+  parameters = valid_parameters();
+  parameters.odom_frame = " odom ";
+  parameters.base_frame = "odom";
+  expect_invalid(parameters, "base_frame");
 }
 
 TEST(DriverParameterValidation, RejectsInvalidGeometry)
@@ -317,6 +364,20 @@ TEST(DriverParameterValidation, InvalidStartupCannotCreateOrOpenTransportOrCreat
   EXPECT_EQ(worker_constructions, 0);
   EXPECT_EQ(ros_entity_constructions, 0);
   EXPECT_EQ(controller_or_motion_commands, 0);
+}
+
+TEST(DriverParameterValidation, InvalidFrameStartupCannotCrossStartupBoundary)
+{
+  auto parameters = valid_parameters();
+  parameters.base_frame = " odom ";
+  int startup_calls = 0;
+
+  const auto error = validation::validate_then_start(
+    parameters, [&startup_calls]() {++startup_calls;});
+
+  ASSERT_TRUE(error.has_value());
+  EXPECT_EQ(error->parameter, "base_frame");
+  EXPECT_EQ(startup_calls, 0);
 }
 
 TEST(DriverParameterValidation, ValidStartupCrossesSerialStartupBoundaryOnce)

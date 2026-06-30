@@ -365,6 +365,8 @@ roboteq_ros2_driver::parameter_validation::DriverParameters
 Roboteq::validation_parameters() const
 {
   return {
+    odom_frame,
+    base_frame,
     port,
     baud,
     wheel_radius,

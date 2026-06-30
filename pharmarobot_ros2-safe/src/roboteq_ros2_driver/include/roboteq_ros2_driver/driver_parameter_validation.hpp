@@ -39,6 +39,8 @@ namespace parameter_validation
 
 struct DriverParameters
 {
+  std::string odom_frame;
+  std::string base_frame;
   std::string port;
   int baud{0};
   double wheel_radius{0.0};
