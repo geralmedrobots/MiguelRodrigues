@@ -51,17 +51,7 @@ TEST(CommandConversion, AppliesExplicitAngularConvention)
   EXPECT_DOUBLE_EQ(neutral.right_mps, 0.2);
 }
 
-TEST(CommandConversion, MapsDefaultChannelsRightThenLeft)
-{
-  const conversion::WheelSpeeds wheels{1.0, 2.0};
-  const auto channels = conversion::wheels_to_channels(wheels, "right", "left");
-
-  ASSERT_TRUE(channels.has_value());
-  EXPECT_DOUBLE_EQ(channels->channel_1_mps, 2.0);
-  EXPECT_DOUBLE_EQ(channels->channel_2_mps, 1.0);
-}
-
-TEST(CommandConversion, MapsSwappedChannelsLeftThenRight)
+TEST(CommandConversion, MapsDefaultChannelsLeftThenRight)
 {
   const conversion::WheelSpeeds wheels{1.0, 2.0};
   const auto channels = conversion::wheels_to_channels(wheels, "left", "right");
@@ -69,6 +59,16 @@ TEST(CommandConversion, MapsSwappedChannelsLeftThenRight)
   ASSERT_TRUE(channels.has_value());
   EXPECT_DOUBLE_EQ(channels->channel_1_mps, 1.0);
   EXPECT_DOUBLE_EQ(channels->channel_2_mps, 2.0);
+}
+
+TEST(CommandConversion, MapsSwappedChannelsRightThenLeft)
+{
+  const conversion::WheelSpeeds wheels{1.0, 2.0};
+  const auto channels = conversion::wheels_to_channels(wheels, "right", "left");
+
+  ASSERT_TRUE(channels.has_value());
+  EXPECT_DOUBLE_EQ(channels->channel_1_mps, 2.0);
+  EXPECT_DOUBLE_EQ(channels->channel_2_mps, 1.0);
 }
 
 TEST(CommandConversion, RejectsInvalidChannelMapping)
@@ -93,7 +93,7 @@ TEST(CommandConversion, AppliesExplicitMotorSigns)
 TEST(CommandConversion, ConvertsTwistToChannelsWithExplicitAngularSign)
 {
   const auto channels = conversion::twist_to_channel_speeds(
-    0.0, 1.0, 0.4, "right", "left", -1);
+    0.0, 1.0, 0.4, "left", "right", 1);
 
   ASSERT_TRUE(channels.has_value());
   EXPECT_DOUBLE_EQ(channels->channel_1_mps, -0.2);

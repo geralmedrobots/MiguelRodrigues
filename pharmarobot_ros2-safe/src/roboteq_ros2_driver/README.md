@@ -217,17 +217,19 @@ wheel geometry, CPR/PPR, RPM, current, baud, response size, or timing values.
 
 The current node defaults and production YAML use `+1` for both motor sign
 parameters and `+1` for both encoder sign parameters. The production YAML also
-uses `encoder_eppr: -1024` and `command_angular_sign: -1`. Changing any sign or
+uses `encoder_eppr: -1024` and `command_angular_sign: 1`. Changing any sign or
 encoder direction parameter changes motor direction, encoder convention, or
 angular command convention and requires separate safety approval and controlled
 hardware validation.
 
 This change intentionally preserves command conversion, command scaling,
 saturation, odometry math, covariance, dynamic TF, frame IDs, encoder signs,
-motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and the
-existing channel mapping. Valid production parameter values and their runtime
-behavior are unchanged; the four sign values are now explicit parameters with
-defaults matching the previous hard-coded behavior.
+motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and current
+controller configuration. Valid production parameter values and their runtime
+behavior reflect the current validated mapping: channel 1 maps to the left
+wheel, channel 2 maps to the right wheel, and `command_angular_sign` is `+1`.
+The four sign parameters are explicit and default to the current production
+convention.
 
 ### Validation commands
 
@@ -409,7 +411,10 @@ paths.
 
 ## Motor Power Connections
 
-This driver assumes right motor is connected to channel 1 (M1) of motor controller, and left motor is connected to channel 2 (M2). It also assumes a positive speed command will result in forward motion of each motor. Best to test motor directions using the roboteq utility software.
+This driver assumes left motor is connected to channel 1 (M1) of the motor
+controller, and right motor is connected to channel 2 (M2). It also assumes a
+positive speed command will result in forward motion of each motor. Best to
+test motor directions using the Roboteq utility software.
 
 
 ## TODO

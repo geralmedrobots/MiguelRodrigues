@@ -111,7 +111,7 @@ private:
   int motor_sign_2{1};
   int encoder_sign_1{1};
   int encoder_sign_2{1};
-  int command_angular_sign{-1};
+  int command_angular_sign{1};
   double max_amps{};
   int max_rpm{};
   std::string channel_1{};

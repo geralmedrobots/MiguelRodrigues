@@ -51,7 +51,7 @@ validation::DriverParameters valid_parameters()
     1,
     1,
     1,
-    -1,
+    1,
     5.0,
     100,
     0.5,
@@ -62,8 +62,8 @@ validation::DriverParameters valid_parameters()
     1.0,
     50,
     1.0,
-    "right",
     "left",
+    "right",
   };
 }
 
@@ -264,7 +264,7 @@ TEST(DriverParameterValidation, RejectsInvalidChannelMapping)
   expect_invalid(parameters, "channel_2");
 
   parameters = valid_parameters();
-  parameters.channel_2 = "right";
+  parameters.channel_2 = "left";
   expect_invalid(parameters, "channel_2");
 }
 

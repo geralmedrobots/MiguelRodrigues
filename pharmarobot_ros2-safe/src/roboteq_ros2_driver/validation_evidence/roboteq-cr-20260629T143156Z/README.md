@@ -70,24 +70,19 @@ Observed hardware mapping:
 | 1 | left | robot-forward wheel rotation |
 | 2 | right | robot-forward wheel rotation |
 
-The production YAML currently declares the inverse mapping:
+The production YAML now matches the validated physical mapping:
 
 ```yaml
-channel_1: "right"
-channel_2: "left"
+channel_1: "left"
+channel_2: "right"
+command_angular_sign: 1
 ```
 
-This causes left/right encoder deltas to be exchanged and reverses angular
-odometry. Straight-line distance is largely unaffected because it uses the
-average of both wheels.
-
-The current `command_angular_sign: -1` compensates for the swapped mapping in
-motor command generation. A production correction should therefore be reviewed
-as one coherent sign-convention change: set channel 1 to `left`, channel 2 to
-`right`, and reassess `command_angular_sign` (expected `+1` to preserve the
-observed physical turning behavior). Do not change only the channel names and
-assume turning behavior is preserved. Validate the correction through the
-normal ROS command and odometry paths with lifted wheels.
+This aligns command conversion and odometry with the confirmed hardware
+convention: channel 1 is the left wheel, channel 2 is the right wheel, and
+positive angular commands use `command_angular_sign: 1`. Future hardware
+changes still require validation through the normal ROS command and odometry
+paths with lifted wheels.
 
 ## Evidence integrity
 

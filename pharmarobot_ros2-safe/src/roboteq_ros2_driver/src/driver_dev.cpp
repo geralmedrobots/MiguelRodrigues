@@ -183,12 +183,12 @@ Roboteq::Roboteq()
   motor_sign_2 = this->declare_parameter("motor_sign_2", 1);
   encoder_sign_1 = this->declare_parameter("encoder_sign_1", 1);
   encoder_sign_2 = this->declare_parameter("encoder_sign_2", 1);
-  command_angular_sign = this->declare_parameter("command_angular_sign", -1);
+  command_angular_sign = this->declare_parameter("command_angular_sign", 1);
   max_amps = this->declare_parameter("max_amps", 5.0);
   max_rpm = this->declare_parameter("max_rpm", 100);
 
-  channel_1 = this->declare_parameter("channel_1", "right");
-  channel_2 = this->declare_parameter("channel_2", "left");
+  channel_1 = this->declare_parameter("channel_1", "left");
+  channel_2 = this->declare_parameter("channel_2", "right");
   cmd_timeout_s_ = this->declare_parameter("cmd_timeout_s", 0.5);
   const auto default_covariance = roboteq_ros2_driver::odom_covariance::default_config();
   odom_covariance_config_.pose_x =
