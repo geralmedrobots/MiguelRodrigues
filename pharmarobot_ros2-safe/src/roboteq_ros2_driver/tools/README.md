@@ -209,3 +209,81 @@ Run the offline tests without a serial device:
 PYTHONDONTWRITEBYTECODE=1 \
   python3 src/roboteq_ros2_driver/tools/test_roboteq_cr_validation.py
 ```
+
+## Read-only diagnostic capture
+
+`roboteq_diagnostic_capture.py` is a separate, isolated evidence tool for the
+SBL2360 diagnostic investigation. It has an immutable allowlist containing
+only `?FID\r`, `?FF\r`, `?FM 1\r`, `?FM 2\r`, and `?FS\r`. There is no CLI
+argument for supplying a query or command. The lowest real serial-write
+boundary checks the complete request bytes against the allowlist immediately
+before writing. The tool never imports or changes the production driver.
+
+Each invocation sends FID once, followed by FF, FM channel 1, FM channel 2,
+and FS for every requested cycle. Responses may contain the exact request echo
+and standalone `+` acknowledgement lines. A result is valid only when it has
+one complete response line with the exact expected prefix. Numeric values must
+be unsigned ASCII decimal in the range 0 through 255. FID must be nonempty
+printable ASCII. Wrong prefixes, signs, overflow, trailing data, duplicate or
+partial replies, explicit rejection, oversized input, and timeouts are invalid.
+
+The evidence file is locked and opened in append mode. Every attempted
+transaction produces one flushed and `fsync`ed JSONL record. Existing records
+are retained and sequence numbers continue from the highest existing value;
+an incomplete or malformed existing file is refused. Raw request, response,
+pre-write drain, and post-transaction drain bytes are stored as both exact
+hexadecimal and escaped visible text. Transaction times and durations are
+integer nanoseconds from a monotonic clock. A successful serial open increments
+the connection generation.
+
+Before any query is written after each successful open, schema version 2 adds a
+separate `startup_synchronization` record. The tool passively captures all
+startup bytes, including NUL and non-ASCII values, then requires two seconds of
+continuous silence after the latest byte. Each received chunk restarts that
+quiet interval. Synchronization has a five-second overall deadline and a
+4096-byte accepted-input cap. Deadline, cap, read, or non-monotonic-clock
+failure produces an invalid record, closes the endpoint, and prevents every
+query. A late read or clock overshoot cannot authorize synchronization after
+the five-second bound; quiet completion exactly at the bound remains valid.
+The startup record is flushed and `fsync`ed before the first query can be
+written. Startup bytes are never considered a query reply.
+
+Every tool session creates an immutable UUID in `session_id`. Every
+schema-version-2 startup and transaction record includes that UUID, and every
+transaction also names both its connection generation and the successful
+synchronization generation that authorized it. This keeps generations
+unambiguous when multiple process sessions append to one file. Closing or
+reopening invalidates the previous synchronization. The recorder continues to
+accept and append after existing schema-version-1 records without changing
+them. Synchronization never flushes controller input and never changes DTR or
+RTS. The endpoint retains its pre-existing `TIOCEXCL` exclusive-access lock;
+that ioctl does not discard bytes or manipulate modem lines.
+
+Serial responses have no transaction identifier. Preexisting bytes prevent a
+write. Any post-write timeout, malformed response, or transport failure causes
+a bounded evidence drain, records `close_required`, and makes the CLI exit
+without sending another query. A finite drain is evidence collection, not proof
+of resynchronisation.
+
+Offline tests use an injected fake endpoint and clock and never open a serial
+device:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 src/roboteq_ros2_driver/tools/test_roboteq_diagnostic_capture.py
+```
+
+Hardware execution requires separate approval, exclusive serial ownership,
+and confirmation that the production driver is stopped. The proposed next
+Phase 2 attempt is limited to one capture cycle and is documented here for
+review only; do not run it during offline testing:
+
+```bash
+python3 src/roboteq_ros2_driver/tools/roboteq_diagnostic_capture.py \
+  --port /dev/roboteq --baud 115200 \
+  --output "$EVIDENCE_DIR/00-diagnostic-baseline.jsonl" \
+  --cycles 1 --interval 1.0
+```
+
+Review the one-cycle evidence before proceeding. A ten-cycle collection is a
+separate subsequent hardware action and requires separate explicit approval.
