@@ -29,6 +29,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 
 #include <algorithm>
 #include <exception>
@@ -50,6 +51,14 @@ namespace
 
 struct FakeTransportState
 {
+  struct WriteObservation
+  {
+    std::vector<std::string> commands;
+    std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point completed;
+    bool succeeded;
+  };
+
   mutable std::mutex mutex;
   std::atomic<bool> open{false};
   std::atomic<int> forbidden_is_open_calls{0};
@@ -61,6 +70,7 @@ struct FakeTransportState
   std::chrono::milliseconds write_delay{0};
   std::chrono::milliseconds query_delay{0};
   std::vector<std::vector<std::string>> write_batches;
+  std::vector<WriteObservation> write_observations;
   std::vector<std::string> queries;
   std::vector<std::string> logs;
   std::vector<std::thread::id> transport_thread_ids;
@@ -69,6 +79,40 @@ struct FakeTransportState
   std::string injected_error;
   bool fail_query{false};
   bool throw_query_exception{false};
+};
+
+struct TimeoutEventCollector
+{
+  void observe(const driver::TimeoutStopEvent & event)
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      events.push_back(event);
+    }
+    cv.notify_all();
+  }
+
+  bool waitForCompletion(std::chrono::milliseconds timeout = 500ms)
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    return cv.wait_for(
+      lock, timeout, [this]() {
+        return std::any_of(
+          events.begin(), events.end(), [](const auto & event) {
+            return event.phase == driver::TimeoutStopEventPhase::zero_write_completed;
+          });
+      });
+  }
+
+  std::vector<driver::TimeoutStopEvent> snapshot() const
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    return events;
+  }
+
+  mutable std::mutex mutex;
+  std::condition_variable cv;
+  std::vector<driver::TimeoutStopEvent> events;
 };
 
 class FakeTransport : public driver::IRoboteqSerialTransport
@@ -107,6 +151,7 @@ public:
   bool sendCommands(const std::vector<std::string> & commands, std::string & error) override
   {
     recordThread();
+    const auto started = std::chrono::steady_clock::now();
     if (state_->write_delay.count() > 0) {
       std::this_thread::sleep_for(state_->write_delay);
     }
@@ -115,9 +160,13 @@ public:
     if (state_->fail_next_write) {
       state_->fail_next_write = false;
       error = "injected write failure";
+      state_->write_observations.push_back(
+        {commands, started, std::chrono::steady_clock::now(), false});
       return false;
     }
     state_->write_batches.push_back(commands);
+    state_->write_observations.push_back(
+      {commands, started, std::chrono::steady_clock::now(), true});
     return true;
   }
 
@@ -186,6 +235,13 @@ std::vector<std::vector<std::string>> writeBatches(
   return state->write_batches;
 }
 
+std::vector<FakeTransportState::WriteObservation> writeObservations(
+  const std::shared_ptr<FakeTransportState> & state)
+{
+  std::lock_guard<std::mutex> lock(state->mutex);
+  return state->write_observations;
+}
+
 bool waitForWriteBatches(
   const std::shared_ptr<FakeTransportState> & state,
   std::size_t count,
@@ -226,6 +282,15 @@ bool waitForCommand(
 bool isStopBatch(const std::vector<std::string> & batch)
 {
   return batch == std::vector<std::string>{"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"};
+}
+
+void expectBoundedFakeWriteLatency(
+  const FakeTransportState::WriteObservation & observation,
+  std::chrono::milliseconds injected_delay)
+{
+  const auto elapsed = observation.completed - observation.started;
+  EXPECT_GE(elapsed, injected_delay);
+  EXPECT_LT(elapsed, 250ms);
 }
 
 bool hasEncoderQuery(const std::shared_ptr<FakeTransportState> & state)
@@ -667,6 +732,159 @@ TEST(SerialIoWorker, MalformedEncoderResponseIsNotPublishedAsValidSample)
   worker.stop();
 
   EXPECT_FALSE(sample.has_value());
+}
+
+TEST(SerialIoWorkerStopLatency, StartupAndShutdownStopsCompleteWithinFakeTransportBound)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  constexpr auto injected_delay = 20ms;
+  state->write_delay = injected_delay;
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_TRUE(waitForWriteBatches(state, 1));
+  worker.stop();
+
+  const auto observations = writeObservations(state);
+  ASSERT_EQ(observations.size(), 2u);
+  ASSERT_TRUE(isStopBatch(observations.front().commands));
+  ASSERT_TRUE(observations.front().succeeded);
+  expectBoundedFakeWriteLatency(observations.front(), injected_delay);
+  ASSERT_TRUE(isStopBatch(observations.back().commands));
+  ASSERT_TRUE(observations.back().succeeded);
+  expectBoundedFakeWriteLatency(observations.back(), injected_delay);
+}
+
+TEST(SerialIoWorkerStopLatency, TimeoutEmitsExactlyOneBoundedStopBeforeShutdown)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto timeout_events = std::make_shared<TimeoutEventCollector>();
+  constexpr auto injected_delay = 10ms;
+  state->write_delay = injected_delay;
+  auto config = workerConfig();
+  config.command_timeout = 40ms;
+  config.encoder_poll_period = 50ms;
+  config.timeout_stop_observer = [timeout_events](const driver::TimeoutStopEvent & event) {
+      timeout_events->observe(event);
+    };
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  worker.submitCommand(1.0, 1.0);
+  const auto timed_out_sequence = worker.commandSequence();
+  ASSERT_TRUE(timeout_events->waitForCompletion(1000ms));
+
+  const auto before_shutdown = writeObservations(state);
+  const auto events = timeout_events->snapshot();
+  ASSERT_EQ(before_shutdown.size(), 3u);
+  ASSERT_EQ(events.size(), 3u);
+  EXPECT_EQ(events[0].phase, driver::TimeoutStopEventPhase::timeout_detected);
+  EXPECT_EQ(events[1].phase, driver::TimeoutStopEventPhase::zero_write_started);
+  EXPECT_EQ(events[2].phase, driver::TimeoutStopEventPhase::zero_write_completed);
+  EXPECT_EQ(events[0].command_sequence, timed_out_sequence);
+  EXPECT_EQ(events[1].command_sequence, timed_out_sequence);
+  EXPECT_EQ(events[2].command_sequence, timed_out_sequence);
+  EXPECT_LE(events[0].timestamp, events[1].timestamp);
+  EXPECT_LE(events[1].timestamp, events[2].timestamp);
+  EXPECT_TRUE(events[2].write_succeeded);
+  EXPECT_TRUE(isStopBatch(before_shutdown[0].commands));
+  EXPECT_FALSE(isStopBatch(before_shutdown[1].commands));
+  EXPECT_TRUE(isStopBatch(before_shutdown[2].commands));
+  EXPECT_EQ(
+    std::count_if(
+      before_shutdown.begin() + 1, before_shutdown.end(),
+      [](const auto & observation) {return isStopBatch(observation.commands);}),
+    1);
+  EXPECT_TRUE(before_shutdown[2].succeeded);
+  expectBoundedFakeWriteLatency(before_shutdown[2], injected_delay);
+  EXPECT_LE(events[1].timestamp, before_shutdown[2].started);
+  EXPECT_LE(before_shutdown[2].completed, events[2].timestamp);
+  EXPECT_TRUE(
+    std::all_of(
+      before_shutdown.begin(), before_shutdown.end(), [&events](const auto & observation) {
+        return observation.started < events[0].timestamp || isStopBatch(observation.commands);
+      }));
+  const auto detection_to_zero_write_completion = events[2].timestamp - events[0].timestamp;
+  EXPECT_GE(detection_to_zero_write_completion, injected_delay);
+  EXPECT_LT(detection_to_zero_write_completion, 250ms);
+
+  std::this_thread::sleep_for(config.command_timeout * 2);
+  const auto after_stale_window = writeObservations(state);
+  ASSERT_EQ(after_stale_window.size(), 3u);
+  EXPECT_FALSE(
+    std::any_of(
+      after_stale_window.begin() + 2, after_stale_window.end(), [](const auto & observation) {
+        return !isStopBatch(observation.commands);
+      }));
+
+  worker.stop();
+}
+
+TEST(SerialIoWorkerStopLatency, NormalCommandEmitsNoTimeoutObservation)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto timeout_events = std::make_shared<TimeoutEventCollector>();
+  auto config = workerConfig();
+  config.command_timeout = 500ms;
+  config.encoder_poll_period = 500ms;
+  config.timeout_stop_observer = [timeout_events](const driver::TimeoutStopEvent & event) {
+      timeout_events->observe(event);
+    };
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  worker.submitCommand(1.0, 1.0);
+  ASSERT_TRUE(waitForCommand(state, "!S 1 60\r"));
+  worker.stop();
+
+  EXPECT_TRUE(timeout_events->snapshot().empty());
+}
+
+TEST(SerialIoWorkerStopLatency, FailedMotionWriteIsFollowedByBoundedStopBeforeReconnect)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  constexpr auto injected_delay = 10ms;
+  state->write_delay = injected_delay;
+  auto config = workerConfig();
+  config.encoder_poll_period = 500ms;
+  config.reconnect_interval = 1000ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->fail_next_write = true;
+  }
+  worker.submitCommand(1.0, 1.0);
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::unhealthy).connection_state,
+    driver::SerialConnectionState::unhealthy);
+
+  const auto before_shutdown = writeObservations(state);
+  ASSERT_EQ(before_shutdown.size(), 3u);
+  EXPECT_TRUE(isStopBatch(before_shutdown[0].commands));
+  EXPECT_FALSE(before_shutdown[1].succeeded);
+  EXPECT_FALSE(isStopBatch(before_shutdown[1].commands));
+  EXPECT_TRUE(before_shutdown[2].succeeded);
+  EXPECT_TRUE(isStopBatch(before_shutdown[2].commands));
+  expectBoundedFakeWriteLatency(before_shutdown[2], injected_delay);
+  EXPECT_LT(before_shutdown[2].completed - before_shutdown[1].completed, 250ms);
+
+  worker.stop();
 }
 
 TEST(SerialIoWorker, TimeoutSendsOneStopAndInvalidatesStaleCommand)

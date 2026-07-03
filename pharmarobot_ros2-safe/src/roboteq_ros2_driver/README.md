@@ -379,6 +379,36 @@ sample handoff, latest-command-wins behavior, malformed encoder response
 rejection, one timeout stop path, reconnect command invalidation, and fresh
 post-reconnect command application.
 
+Phase 5A adds offline stop-path latency coverage with an optional, normally
+unset timeout-stop observer on the production serial worker. The observer
+reports monotonic `std::chrono::steady_clock` timestamps for timeout detection,
+zero-write start, and zero-write completion, correlated by the timed-out command
+sequence. Observer exceptions are contained and no production node configures
+the observer, so the seam does not change scheduling, serial, timeout, command
+priority, or reconnect behavior when unused.
+
+The fake transport records each write's start, completion, success, and exact
+command batch. Focused tests inject a known write delay and directly measure
+timeout-detection to zero-command-write-completion latency. They also verify
+bounded completion of the exact zero-stop batch during startup, command timeout,
+transport-write failure before reconnect, and shutdown; exactly one timeout
+event sequence; correct event/write ordering; no post-timeout non-zero write;
+and no stale-command replay. A normal non-timeout command emits no timeout
+events.
+
+The required Phase 5A interval is timeout-detected timestamp to zero-write
+completion timestamp. It is distinct from stop-request-to-write latency, the
+configured diagnostic deadline, total timeout recovery, and reconnect duration.
+These tests bound software dispatch plus fake-transport completion on the test
+host; they do not measure USB, controller, motor, brake, STO, or physical stop
+latency. Their 250 ms test guard is a scheduler/test-harness failure bound, not
+a production timeout or safety requirement. The normal diagnostic transaction
+deadline candidate remains 100 ms.
+
+Verified Phase 3 timeout/resynchronisation evidence, including immutable file
+paths, SHA-256 checksums, and raw framing conclusions, is documented in
+`validation_evidence/README.md`.
+
 ## Lifted-wheel hardware validation
 
 Automated tests do not access `/dev/roboteq` or move motors. Before driving the

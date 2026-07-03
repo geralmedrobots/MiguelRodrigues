@@ -312,6 +312,8 @@ void SerialIoWorker::run()
     DesiredMotorCommand command;
     bool have_command = false;
     bool timeout_stop_required = false;
+    uint64_t timed_out_command_sequence = 0;
+    std::chrono::steady_clock::time_point timeout_detected_at;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       command = desired_command_;
@@ -320,14 +322,38 @@ void SerialIoWorker::run()
         command.sequence >= minimum_motion_sequence_;
 
       if (desired_command_.valid && !applied_stopped_) {
-        const auto age = std::chrono::steady_clock::now() - desired_command_.received_time;
+        const auto timeout_check_at = std::chrono::steady_clock::now();
+        const auto age = timeout_check_at - desired_command_.received_time;
         timeout_stop_required = age >= config_.command_timeout;
+        if (timeout_stop_required) {
+          timed_out_command_sequence = desired_command_.sequence;
+          timeout_detected_at = timeout_check_at;
+        }
       }
     }
 
     std::string error;
     if (timeout_stop_required) {
-      if (!sendStop("command timeout", error)) {
+      observeTimeoutStop(
+        TimeoutStopEvent{
+          TimeoutStopEventPhase::timeout_detected,
+          timeout_detected_at,
+          timed_out_command_sequence,
+          false});
+      observeTimeoutStop(
+        TimeoutStopEvent{
+          TimeoutStopEventPhase::zero_write_started,
+          std::chrono::steady_clock::now(),
+          timed_out_command_sequence,
+          false});
+      const bool stop_succeeded = sendStop("command timeout", error);
+      observeTimeoutStop(
+        TimeoutStopEvent{
+          TimeoutStopEventPhase::zero_write_completed,
+          std::chrono::steady_clock::now(),
+          timed_out_command_sequence,
+          stop_succeeded});
+      if (!stop_succeeded) {
         markFailure(error);
         next_reconnect = std::chrono::steady_clock::now() + config_.reconnect_interval;
         continue;
@@ -441,6 +467,18 @@ bool SerialIoWorker::sendStop(const char *, std::string & error)
   return transport_->sendCommands(
     {"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"},
     error);
+}
+
+void SerialIoWorker::observeTimeoutStop(const TimeoutStopEvent & event) const noexcept
+{
+  if (!config_.timeout_stop_observer) {
+    return;
+  }
+  try {
+    config_.timeout_stop_observer(event);
+  } catch (...) {
+    // Observability must never alter timeout-stop or recovery behavior.
+  }
 }
 
 bool SerialIoWorker::sendDesiredCommand(const DesiredMotorCommand & command, std::string & error)

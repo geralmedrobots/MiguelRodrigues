@@ -88,6 +88,21 @@ struct SerialWorkerStatus
   uint64_t update_sequence{0};
 };
 
+enum class TimeoutStopEventPhase
+{
+  timeout_detected,
+  zero_write_started,
+  zero_write_completed,
+};
+
+struct TimeoutStopEvent
+{
+  TimeoutStopEventPhase phase{TimeoutStopEventPhase::timeout_detected};
+  std::chrono::steady_clock::time_point timestamp{};
+  uint64_t command_sequence{0};
+  bool write_succeeded{false};
+};
+
 struct SerialWorkerConfig
 {
   bool open_loop{false};
@@ -99,6 +114,7 @@ struct SerialWorkerConfig
   bool require_fresh_command_after_reconnect{true};
   std::vector<configuration::RequiredControllerSetting> required_settings;
   std::function<void(const std::string &)> log_callback;
+  std::function<void(const TimeoutStopEvent &)> timeout_stop_observer;
 };
 
 class SerialIoWorker
@@ -126,6 +142,7 @@ private:
   void run();
   bool connectAndValidate(std::string & error);
   bool sendStop(const char * reason, std::string & error);
+  void observeTimeoutStop(const TimeoutStopEvent & event) const noexcept;
   bool sendDesiredCommand(const DesiredMotorCommand & command, std::string & error);
   bool validateControllerConfiguration(std::string & error);
   bool validateCommunication(std::string & error);
