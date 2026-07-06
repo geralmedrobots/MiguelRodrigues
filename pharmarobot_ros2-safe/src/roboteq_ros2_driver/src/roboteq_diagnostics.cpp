@@ -162,7 +162,8 @@ int serialLevel(const DiagnosticsState & state)
     return state.serial_ready ? DiagnosticStatus::OK : DiagnosticStatus::WARN;
   }
   if (connectionState(state) == SerialConnectionState::ready) {
-    return DiagnosticStatus::OK;
+    return state.worker_status->framing_state == SerialFramingState::synchronized ?
+           DiagnosticStatus::OK : DiagnosticStatus::WARN;
   }
   return DiagnosticStatus::WARN;
 }
@@ -178,6 +179,9 @@ std::string serialMessage(const DiagnosticsState & state)
   if (connectionState(state) == SerialConnectionState::waiting_for_fresh_command) {
     return "waiting for fresh command";
   }
+  if (state.worker_status->framing_state == SerialFramingState::unresolved) {
+    return "diagnostic framing unresolved";
+  }
   return state.serial_ready && connectionState(state) == SerialConnectionState::ready ?
          "ready" : "connected but not ready";
 }
@@ -192,6 +196,9 @@ std::string serialReason(const DiagnosticsState & state)
   }
   if (connectionState(state) == SerialConnectionState::waiting_for_fresh_command) {
     return "fresh command required after reconnect";
+  }
+  if (state.worker_status->framing_state == SerialFramingState::unresolved) {
+    return "normal transactions suspended during bounded diagnostic recovery";
   }
   return state.serial_ready && connectionState(state) == SerialConnectionState::ready ?
          "transport open and motion-ready" : "transport open but not ready";
@@ -280,6 +287,19 @@ diagnostic_msgs::msg::DiagnosticArray buildDiagnosticsArray(
       serial_status,
       "connection_state",
       workerStateName(state.worker_status->connection_state));
+    appendValue(
+      serial_status,
+      "connection_generation",
+      std::to_string(state.worker_status->connection_generation));
+    appendValue(
+      serial_status,
+      "serial_framing",
+      state.worker_status->framing_state == SerialFramingState::synchronized ?
+      "synchronized" : "unresolved");
+    appendValue(
+      serial_status,
+      "diagnostic_recovery_pending",
+      state.worker_status->diagnostic_recovery_pending ? "true" : "false");
   }
   array.status.push_back(serial_status);
 

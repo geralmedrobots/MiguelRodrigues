@@ -64,6 +64,32 @@ struct EncoderSample
   bool valid{false};
 };
 
+enum class DiagnosticQueryKind
+{
+  firmware_id,
+  fault_flags,
+  motor_status_1,
+  motor_status_2,
+  status_flags,
+};
+
+enum class SerialFramingState
+{
+  synchronized,
+  unresolved,
+};
+
+struct DiagnosticTelemetry
+{
+  DiagnosticQueryKind query{DiagnosticQueryKind::firmware_id};
+  std::string raw_value;
+  bool valid{false};
+  std::chrono::steady_clock::time_point timestamp{};
+  std::chrono::milliseconds age{0};
+  uint64_t connection_generation{0};
+  std::string failure_reason{"not sampled"};
+};
+
 enum class SerialConnectionState
 {
   disconnected,
@@ -86,6 +112,9 @@ struct SerialWorkerStatus
   uint64_t latest_encoder_sequence{0};
   uint64_t command_sequence{0};
   uint64_t update_sequence{0};
+  uint64_t connection_generation{0};
+  SerialFramingState framing_state{SerialFramingState::synchronized};
+  bool diagnostic_recovery_pending{false};
 };
 
 enum class TimeoutStopEventPhase
@@ -111,6 +140,8 @@ struct SerialWorkerConfig
   std::chrono::milliseconds command_timeout{500};
   std::chrono::milliseconds encoder_poll_period{50};
   std::chrono::milliseconds reconnect_interval{1000};
+  std::chrono::milliseconds diagnostic_query_timeout{100};
+  DiagnosticRecoveryBounds diagnostic_recovery_bounds{};
   bool require_fresh_command_after_reconnect{true};
   std::vector<configuration::RequiredControllerSetting> required_settings;
   std::function<void(const std::string &)> log_callback;
@@ -137,6 +168,8 @@ public:
   bool isConnected() const;
   bool isReadyForMotion() const;
   SerialWorkerStatus status() const;
+  bool queueDiagnosticQuery(DiagnosticQueryKind query);
+  std::optional<DiagnosticTelemetry> latestDiagnosticTelemetry() const;
 
 private:
   void run();
@@ -147,6 +180,9 @@ private:
   bool validateControllerConfiguration(std::string & error);
   bool validateCommunication(std::string & error);
   bool pollEncoder(std::string & error);
+  bool performDiagnosticRecovery(std::string & error);
+  bool executeDiagnosticQuery(DiagnosticQueryKind query);
+  void invalidateDiagnosticTelemetry(const std::string & reason);
   void markFailure(const std::string & error);
   std::vector<std::string> buildMotorCommands(double channel_1_mps, double channel_2_mps) const;
   std::chrono::steady_clock::time_point nextWakeTime(
@@ -171,6 +207,13 @@ private:
   std::optional<EncoderSample> last_encoder_sample_;
   uint64_t encoder_sequence_{0};
   uint64_t status_update_sequence_{0};
+  uint64_t connection_generation_{0};
+  SerialFramingState framing_state_{SerialFramingState::synchronized};
+  std::optional<DiagnosticQueryKind> queued_diagnostic_query_;
+  std::optional<DiagnosticTransaction> timed_out_diagnostic_;
+  std::chrono::steady_clock::time_point timed_out_diagnostic_started_at_{};
+  bool diagnostic_recovery_pending_{false};
+  std::optional<DiagnosticTelemetry> latest_diagnostic_telemetry_;
   SerialConnectionState state_{SerialConnectionState::disconnected};
   std::thread worker_thread_;
 };

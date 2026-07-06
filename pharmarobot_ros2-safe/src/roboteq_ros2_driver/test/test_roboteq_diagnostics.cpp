@@ -303,6 +303,26 @@ TEST(RoboteqDiagnostics, WaitingForFreshCommandAfterReconnectIsDegraded)
   EXPECT_EQ(valueByKey(serial_status, "connection_state"), "waiting_for_fresh_command");
 }
 
+TEST(RoboteqDiagnostics, UnresolvedDiagnosticFramingNeverReportsReady)
+{
+  auto state = baseState();
+  auto config = baseConfig();
+  state.worker_status = workerStatus(
+    roboteq_ros2_driver::SerialConnectionState::ready);
+  state.worker_status->connection_generation = 7;
+  state.worker_status->framing_state = roboteq_ros2_driver::SerialFramingState::unresolved;
+  state.worker_status->diagnostic_recovery_pending = true;
+
+  const auto msg = driver::buildDiagnosticsArray(rclcpp::Time(1, 0, RCL_ROS_TIME), state, config);
+  const auto & serial_status = statusByName(msg, "roboteq/serial_connection");
+
+  EXPECT_EQ(serial_status.level, DiagnosticStatus::WARN);
+  EXPECT_EQ(serial_status.message, "diagnostic framing unresolved");
+  EXPECT_EQ(valueByKey(serial_status, "connection_generation"), "7");
+  EXPECT_EQ(valueByKey(serial_status, "serial_framing"), "unresolved");
+  EXPECT_EQ(valueByKey(serial_status, "diagnostic_recovery_pending"), "true");
+}
+
 TEST(RoboteqDiagnostics, CommandTimeoutAndRecoveryUseErrorAndInfoSeverity)
 {
   auto state = baseState();

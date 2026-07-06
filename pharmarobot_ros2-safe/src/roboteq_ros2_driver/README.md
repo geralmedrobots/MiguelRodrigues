@@ -409,6 +409,40 @@ Verified Phase 3 timeout/resynchronisation evidence, including immutable file
 paths, SHA-256 checksums, and raw framing conclusions, is documented in
 `validation_evidence/README.md`.
 
+### Diagnostic timeout recovery policy
+
+Production serial ownership remains exclusively in `SerialIoWorker`. The
+worker now provides an opt-in, one-shot read-only diagnostic request queue;
+the driver node does not queue requests, so periodic controller diagnostic
+polling is not enabled by this change. The only accepted requests are `?FID`,
+`?FF`, `?FM 1`, `?FM 2`, and `?FS` (each terminated by carriage return).
+
+The normal diagnostic-query deadline candidate is 100 ms. A timeout records a
+monotonic timestamp, makes that telemetry UNKNOWN, and marks serial framing
+unresolved. Normal command, encoder, and diagnostic transactions remain
+suspended while framing is unresolved; a pending zero/stop action retains its
+higher scheduling priority. The worker then performs exactly one bounded
+recovery attempt. It retains drained raw bytes, accepts at most one complete
+delayed response matching the timed-out query, and uses a distinguishable
+read-only synchronization query (`FF` timeout to `FS`; all other allowed
+timeouts to `FF`). Recovery succeeds only for one complete, exact response
+with no extra line or trailing bytes.
+
+The delayed-reply drain has a 100 ms horizon from the original query start, a
+120 ms absolute limit, a 20 ms quiet period, and a 4096-byte cap. The
+synchronization query is limited to 100 ms and 256 bytes; its trailing framing
+check uses a 20 ms quiet period, a 50 ms absolute limit, and the same 256-byte
+cap. Partial, malformed, oversized, concatenated, wrong-prefix, extra-line, or
+deadline-limited results fail recovery and enter the existing reconnect path.
+Reconnect advances the connection generation, invalidates old telemetry and
+diagnostic state, preserves the fresh-command gate, and never replays a
+pre-failure motion command.
+
+This mechanism protects transaction framing and diagnostic data integrity. It
+does not grant motion permission and is not a functional-safety or physical
+STO mechanism. Hardware safety/STO remains **UNSUPPORTED — external contactor
+safety chain is not independently observable through controller telemetry**.
+
 ## Lifted-wheel hardware validation
 
 Automated tests do not access `/dev/roboteq` or move motors. Before driving the

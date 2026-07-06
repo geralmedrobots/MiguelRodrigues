@@ -50,6 +50,49 @@ struct SerialTransportConfig
   std::size_t max_response_bytes{256};
 };
 
+enum class DiagnosticTransportStatus
+{
+  success,
+  timeout,
+  failure,
+};
+
+struct DiagnosticTransaction
+{
+  std::string command;
+  std::string expected_prefix;
+  std::chrono::milliseconds timeout{100};
+};
+
+struct DiagnosticTransactionResult
+{
+  DiagnosticTransportStatus status{DiagnosticTransportStatus::failure};
+  std::string response;
+  std::string raw_bytes;
+  std::string reason;
+  std::chrono::steady_clock::time_point started_at{};
+};
+
+struct DiagnosticRecoveryBounds
+{
+  std::chrono::milliseconds delayed_reply_horizon{100};
+  std::chrono::milliseconds drain_absolute_limit{120};
+  std::chrono::milliseconds drain_quiet_period{20};
+  std::size_t max_drain_bytes{4096};
+  std::chrono::milliseconds synchronization_timeout{100};
+  std::chrono::milliseconds post_sync_absolute_limit{50};
+  std::chrono::milliseconds post_sync_quiet_period{20};
+  std::size_t max_response_bytes{256};
+};
+
+struct DiagnosticRecoveryResult
+{
+  bool synchronized{false};
+  std::string drained_raw_bytes;
+  std::string synchronization_response;
+  std::string reason;
+};
+
 class IRoboteqSerialTransport
 {
 public:
@@ -64,6 +107,13 @@ public:
     const std::string & expected_prefix,
     std::string & response,
     std::string & error) = 0;
+  virtual DiagnosticTransactionResult diagnosticQuery(
+    const DiagnosticTransaction & transaction) = 0;
+  virtual DiagnosticRecoveryResult boundedDiagnosticRecovery(
+    const DiagnosticTransaction & timed_out_transaction,
+    std::chrono::steady_clock::time_point timed_out_query_started_at,
+    const DiagnosticTransaction & synchronization_transaction,
+    const DiagnosticRecoveryBounds & bounds) = 0;
 };
 
 class RoboteqSerialTransport : public IRoboteqSerialTransport
@@ -80,11 +130,26 @@ public:
     const std::string & expected_prefix,
     std::string & response,
     std::string & error) override;
+  DiagnosticTransactionResult diagnosticQuery(
+    const DiagnosticTransaction & transaction) override;
+  DiagnosticRecoveryResult boundedDiagnosticRecovery(
+    const DiagnosticTransaction & timed_out_transaction,
+    std::chrono::steady_clock::time_point timed_out_query_started_at,
+    const DiagnosticTransaction & synchronization_transaction,
+    const DiagnosticRecoveryBounds & bounds) override;
 
 private:
   bool readLine(
     const std::chrono::steady_clock::time_point & deadline,
     std::string & line,
+    std::string & error);
+  bool writeReadOnlyDiagnostic(const std::string & command, std::string & error);
+  bool readRawUntilQuiet(
+    const std::chrono::steady_clock::time_point & not_before,
+    const std::chrono::steady_clock::time_point & absolute_deadline,
+    std::chrono::milliseconds quiet_period,
+    std::size_t max_bytes,
+    std::string & raw,
     std::string & error);
 
   SerialTransportConfig config_;
