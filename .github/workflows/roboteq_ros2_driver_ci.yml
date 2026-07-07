@@ -1,0 +1,103 @@
+name: roboteq_ros2_driver CI
+
+on:
+  push:
+    paths:
+      - ".github/workflows/roboteq_ros2_driver_ci.yml"
+      - "pharmarobot_ros2-safe/**"
+  pull_request:
+    paths:
+      - ".github/workflows/roboteq_ros2_driver_ci.yml"
+      - "pharmarobot_ros2-safe/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    container:
+      image: ros:humble-ros-base-jammy
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install package dependencies
+        shell: bash
+        working-directory: pharmarobot_ros2-safe
+        run: |
+          set -euo pipefail
+          apt-get update
+          rosdep update --rosdistro humble
+          rosdep install \
+            --from-paths src \
+            --ignore-src \
+            --rosdistro humble \
+            --as-root apt:false \
+            --default-yes
+
+      - name: Check repository whitespace
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          elif [[ "$PUSH_BASE_SHA" =~ ^0+$ ]]; then
+            # A new branch has no meaningful remote base. Check the pushed
+            # commit itself without comparing the branch's full legacy tree.
+            git show --check --format= "$HEAD_SHA" --
+            exit 0
+          else
+            base_sha="$PUSH_BASE_SHA"
+          fi
+          git diff --check "$base_sha" "$HEAD_SHA" --
+
+      - name: Build serial and roboteq_ros2_driver
+        shell: bash
+        working-directory: pharmarobot_ros2-safe
+        run: |
+          set -eo pipefail
+          source /opt/ros/humble/setup.bash
+          set -u
+          colcon --log-base "$RUNNER_TEMP/roboteq_ci/log/build" build \
+            --packages-up-to roboteq_ros2_driver \
+            --build-base "$RUNNER_TEMP/roboteq_ci/build" \
+            --install-base "$RUNNER_TEMP/roboteq_ci/install" \
+            --event-handlers console_direct+
+
+      - name: Test serial and roboteq_ros2_driver
+        shell: bash
+        working-directory: pharmarobot_ros2-safe
+        env:
+          AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS: "1"
+        run: |
+          set -eo pipefail
+          source /opt/ros/humble/setup.bash
+          source "$RUNNER_TEMP/roboteq_ci/install/setup.bash"
+          set -u
+          colcon --log-base "$RUNNER_TEMP/roboteq_ci/log/test" test \
+            --packages-select serial roboteq_ros2_driver \
+            --build-base "$RUNNER_TEMP/roboteq_ci/build" \
+            --install-base "$RUNNER_TEMP/roboteq_ci/install" \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure
+
+      - name: Inspect test results
+        if: ${{ always() }}
+        shell: bash
+        working-directory: pharmarobot_ros2-safe
+        run: |
+          set -eo pipefail
+          source /opt/ros/humble/setup.bash
+          set -u
+          colcon test-result \
+            --test-result-base "$RUNNER_TEMP/roboteq_ci/build" \
+            --verbose

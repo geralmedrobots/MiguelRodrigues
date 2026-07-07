@@ -18,7 +18,7 @@ roboteq_ros2_driver:
     motor_sign_2: 1
     encoder_sign_1: 1
     encoder_sign_2: 1
-    command_angular_sign: -1
+    command_angular_sign: 1
     max_amps: 5.0
     max_rpm: 100
     serial_read_timeout_ms: 50
@@ -28,8 +28,8 @@ roboteq_ros2_driver:
     serial_reconnect_interval_s: 1.0
     encoder_poll_period_ms: 50
     require_fresh_command_after_reconnect: true
-    channel_1: "right" # physical right motor
-    channel_2: "left" # physical left motor
+    channel_1: "left" # physical left motor
+    channel_2: "right" # physical right motor
     odom_pose_covariance_x: 0.05
     odom_pose_covariance_y: 0.10
     odom_pose_covariance_z: 1000000.0

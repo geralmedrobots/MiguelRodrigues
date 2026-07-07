@@ -1,36 +1,61 @@
+// Copyright 2026 Medrobots
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    * Redistributions of source code must retain the above copyright
+//      notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above copyright
+//      notice, this list of conditions and the following disclaimer in the
+//      documentation and/or other materials provided with the distribution.
+//    * Neither the name of the copyright holder nor the names of its
+//      contributors may be used to endorse or promote products derived from
+//      this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
 #ifndef ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
 #define ROBOTEQ_ROS2_DRIVER__ROBOTEQ_ROS2_DRIVER_HPP_
 
 #include <math.h>
 #include <unistd.h>
 
-#include <optional>
-#include <rclcpp/rclcpp.hpp>
-#if __has_include(<tf2_geometry_msgs/tf2_geometry_msgs.hpp>)
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#else
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#endif
-#include <sensor_msgs/msg/joint_state.hpp>
-#include <rclcpp/rclcpp.hpp>
-
 #include <climits>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <vector>
+
+#include <rclcpp/rclcpp.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "tf2_ros/transform_broadcaster.h"
-#include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
-#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
+#include "roboteq_ros2_driver/msg/wheel_ticks.hpp"
 #include "roboteq_ros2_driver/odom_covariance.hpp"
+#include "roboteq_ros2_driver/roboteq_diagnostics.hpp"
 #include "roboteq_ros2_driver/roboteq_odometry.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_worker.hpp"
 
@@ -48,6 +73,7 @@ private:
   rclcpp::Time last_cmd_time_;
   bool received_first_cmd_ = false;
   bool command_timeout_logged_ = false;
+  mutable std::mutex command_state_mutex_;
   double cmd_timeout_s_ = 0.5;
 
   roboteq_ros2_driver::odometry::OdometryIntegrator odometry_integrator_;
@@ -62,7 +88,8 @@ private:
   float odom_y{};
   float odom_yaw{};
 
-  uint32_t odom_last_time{};
+  std::chrono::steady_clock::time_point odom_last_time{};
+  bool odom_last_time_valid_{false};
 
 
   // settings
@@ -84,7 +111,7 @@ private:
   int motor_sign_2{1};
   int encoder_sign_1{1};
   int encoder_sign_2{1};
-  int command_angular_sign{-1};
+  int command_angular_sign{1};
   double max_amps{};
   int max_rpm{};
   std::string channel_1{};
@@ -135,6 +162,7 @@ private:
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> odom_tf_broadcaster_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
+  std::mutex diagnostics_publication_mutex_;
   roboteq_ros2_driver::DiagnosticsPublisherState diagnostics_state_;
 };
 

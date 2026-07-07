@@ -29,6 +29,7 @@
 
 #include <climits>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <string>
 
@@ -75,6 +76,22 @@ std::optional<WheelTickDelta> map_channel_encoder_sample_to_wheels(
   return std::nullopt;
 }
 
+bool is_valid_elapsed_interval(double dt)
+{
+  return std::isfinite(dt) && dt > 0.0;
+}
+
+std::optional<double> monotonic_elapsed_interval(
+  std::chrono::steady_clock::time_point previous,
+  std::chrono::steady_clock::time_point current)
+{
+  const double dt = std::chrono::duration<double>(current - previous).count();
+  if (!is_valid_elapsed_interval(dt)) {
+    return std::nullopt;
+  }
+  return dt;
+}
+
 void OdometryIntegrator::init(
   double wheel_radius,
   double wheelbase,
@@ -98,6 +115,10 @@ std::optional<IntegrationResult> OdometryIntegrator::integrate_channel_sample(
     channel_1_ticks, channel_2_ticks, channel_1, channel_2,
     encoder_sign_1, encoder_sign_2);
   if (!ticks.has_value()) {
+    return std::nullopt;
+  }
+
+  if (twist_initialized_ && !is_valid_elapsed_interval(dt)) {
     return std::nullopt;
   }
 

@@ -217,17 +217,19 @@ wheel geometry, CPR/PPR, RPM, current, baud, response size, or timing values.
 
 The current node defaults and production YAML use `+1` for both motor sign
 parameters and `+1` for both encoder sign parameters. The production YAML also
-uses `encoder_eppr: -1024` and `command_angular_sign: -1`. Changing any sign or
+uses `encoder_eppr: -1024` and `command_angular_sign: 1`. Changing any sign or
 encoder direction parameter changes motor direction, encoder convention, or
 angular command convention and requires separate safety approval and controlled
 hardware validation.
 
 This change intentionally preserves command conversion, command scaling,
 saturation, odometry math, covariance, dynamic TF, frame IDs, encoder signs,
-motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and the
-existing channel mapping. Valid production parameter values and their runtime
-behavior are unchanged; the four sign values are now explicit parameters with
-defaults matching the previous hard-coded behavior.
+motor direction, wheel radius, wheel separation, `/cmd_vel/safe`, and current
+controller configuration. Valid production parameter values and their runtime
+behavior reflect the current validated mapping: channel 1 maps to the left
+wheel, channel 2 maps to the right wheel, and `command_angular_sign` is `+1`.
+The four sign parameters are explicit and default to the current production
+convention.
 
 ### Validation commands
 
@@ -377,6 +379,70 @@ sample handoff, latest-command-wins behavior, malformed encoder response
 rejection, one timeout stop path, reconnect command invalidation, and fresh
 post-reconnect command application.
 
+Phase 5A adds offline stop-path latency coverage with an optional, normally
+unset timeout-stop observer on the production serial worker. The observer
+reports monotonic `std::chrono::steady_clock` timestamps for timeout detection,
+zero-write start, and zero-write completion, correlated by the timed-out command
+sequence. Observer exceptions are contained and no production node configures
+the observer, so the seam does not change scheduling, serial, timeout, command
+priority, or reconnect behavior when unused.
+
+The fake transport records each write's start, completion, success, and exact
+command batch. Focused tests inject a known write delay and directly measure
+timeout-detection to zero-command-write-completion latency. They also verify
+bounded completion of the exact zero-stop batch during startup, command timeout,
+transport-write failure before reconnect, and shutdown; exactly one timeout
+event sequence; correct event/write ordering; no post-timeout non-zero write;
+and no stale-command replay. A normal non-timeout command emits no timeout
+events.
+
+The required Phase 5A interval is timeout-detected timestamp to zero-write
+completion timestamp. It is distinct from stop-request-to-write latency, the
+configured diagnostic deadline, total timeout recovery, and reconnect duration.
+These tests bound software dispatch plus fake-transport completion on the test
+host; they do not measure USB, controller, motor, brake, STO, or physical stop
+latency. Their 250 ms test guard is a scheduler/test-harness failure bound, not
+a production timeout or safety requirement. The normal diagnostic transaction
+deadline candidate remains 100 ms.
+
+Verified Phase 3 timeout/resynchronisation evidence, including immutable file
+paths, SHA-256 checksums, and raw framing conclusions, is documented in
+`validation_evidence/README.md`.
+
+### Diagnostic timeout recovery policy
+
+Production serial ownership remains exclusively in `SerialIoWorker`. The
+worker now provides an opt-in, one-shot read-only diagnostic request queue;
+the driver node does not queue requests, so periodic controller diagnostic
+polling is not enabled by this change. The only accepted requests are `?FID`,
+`?FF`, `?FM 1`, `?FM 2`, and `?FS` (each terminated by carriage return).
+
+The normal diagnostic-query deadline candidate is 100 ms. A timeout records a
+monotonic timestamp, makes that telemetry UNKNOWN, and marks serial framing
+unresolved. Normal command, encoder, and diagnostic transactions remain
+suspended while framing is unresolved; a pending zero/stop action retains its
+higher scheduling priority. The worker then performs exactly one bounded
+recovery attempt. It retains drained raw bytes, accepts at most one complete
+delayed response matching the timed-out query, and uses a distinguishable
+read-only synchronization query (`FF` timeout to `FS`; all other allowed
+timeouts to `FF`). Recovery succeeds only for one complete, exact response
+with no extra line or trailing bytes.
+
+The delayed-reply drain has a 100 ms horizon from the original query start, a
+120 ms absolute limit, a 20 ms quiet period, and a 4096-byte cap. The
+synchronization query is limited to 100 ms and 256 bytes; its trailing framing
+check uses a 20 ms quiet period, a 50 ms absolute limit, and the same 256-byte
+cap. Partial, malformed, oversized, concatenated, wrong-prefix, extra-line, or
+deadline-limited results fail recovery and enter the existing reconnect path.
+Reconnect advances the connection generation, invalidates old telemetry and
+diagnostic state, preserves the fresh-command gate, and never replays a
+pre-failure motion command.
+
+This mechanism protects transaction framing and diagnostic data integrity. It
+does not grant motion permission and is not a functional-safety or physical
+STO mechanism. Hardware safety/STO remains **UNSUPPORTED — external contactor
+safety chain is not independently observable through controller telemetry**.
+
 ## Lifted-wheel hardware validation
 
 Automated tests do not access `/dev/roboteq` or move motors. Before driving the
@@ -409,7 +475,10 @@ paths.
 
 ## Motor Power Connections
 
-This driver assumes right motor is connected to channel 1 (M1) of motor controller, and left motor is connected to channel 2 (M2). It also assumes a positive speed command will result in forward motion of each motor. Best to test motor directions using the roboteq utility software.
+This driver assumes left motor is connected to channel 1 (M1) of the motor
+controller, and right motor is connected to channel 2 (M2). It also assumes a
+positive speed command will result in forward motion of each motor. Best to
+test motor directions using the Roboteq utility software.
 
 
 ## TODO

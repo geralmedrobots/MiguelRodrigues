@@ -245,9 +245,12 @@ ament_target_dependencies(${PROJECT_NAME}_node
 )
 
 # Link generated WheelTicks message interface
-rosidl_target_interfaces(${PROJECT_NAME}_node
+rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME}
   "rosidl_typesupport_cpp"
+)
+target_link_libraries(${PROJECT_NAME}_node
+  ${cpp_typesupport_target}
 )
 
 target_include_directories(${PROJECT_NAME}_node PUBLIC
@@ -386,6 +389,7 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_roboteq_diagnostics
     roboteq_diagnostics
+    roboteq_driver_parameter_validation
   )
 
   ament_add_gtest(test_roboteq_odometry

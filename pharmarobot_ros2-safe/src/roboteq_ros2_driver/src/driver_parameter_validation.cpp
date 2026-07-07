@@ -27,6 +27,7 @@
 
 #include "roboteq_ros2_driver/driver_parameter_validation.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -89,10 +90,66 @@ bool is_channel_name(const std::string & value)
   return value == "left" || value == "right";
 }
 
+std::string trim_copy(const std::string & value)
+{
+  std::string::size_type begin = 0;
+  while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) {
+    ++begin;
+  }
+
+  std::string::size_type end = value.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+    --end;
+  }
+
+  return value.substr(begin, end - begin);
+}
+
 }  // namespace
+
+std::optional<ValidationError> validate_encoder_freshness_thresholds(
+  double warn_s, double error_s)
+{
+  if (const auto error = positive_finite("encoder_freshness_warn_s", warn_s)) {
+    return error;
+  }
+  if (const auto error = positive_finite("encoder_freshness_error_s", error_s)) {
+    return error;
+  }
+  if (error_s <= warn_s) {
+    return ValidationError{
+      "encoder_freshness_error_s", "must be greater than encoder_freshness_warn_s"};
+  }
+  const double max_seconds_for_milliseconds =
+    static_cast<double>(std::numeric_limits<int>::max()) / 1000.0;
+  if (warn_s > max_seconds_for_milliseconds) {
+    return ValidationError{
+      "encoder_freshness_warn_s", "exceeds the software conversion limit for milliseconds"};
+  }
+  if (error_s > max_seconds_for_milliseconds) {
+    return ValidationError{
+      "encoder_freshness_error_s", "exceeds the software conversion limit for milliseconds"};
+  }
+  return std::nullopt;
+}
 
 std::optional<ValidationError> validate(const DriverParameters & p)
 {
+  const std::string trimmed_odom_frame = trim_copy(p.odom_frame);
+  if (trimmed_odom_frame.empty()) {
+    return ValidationError{"odom_frame", "must not be empty or whitespace-only"};
+  }
+
+  const std::string trimmed_base_frame = trim_copy(p.base_frame);
+  if (trimmed_base_frame.empty()) {
+    return ValidationError{"base_frame", "must not be empty or whitespace-only"};
+  }
+
+  if (trimmed_odom_frame == trimmed_base_frame) {
+    return ValidationError{
+      "base_frame", "must differ from odom_frame after trimming surrounding whitespace"};
+  }
+
   if (p.port.empty()) {
     return ValidationError{"port", "must not be empty"};
   }
@@ -181,6 +238,11 @@ std::optional<ValidationError> validate(const DriverParameters & p)
   }
   if (const auto error = positive_finite(
       "diagnostics_publish_rate_hz", p.diagnostics_publish_rate_hz))
+  {
+    return error;
+  }
+  if (const auto error = validate_encoder_freshness_thresholds(
+      p.encoder_freshness_warn_s, p.encoder_freshness_error_s))
   {
     return error;
   }
