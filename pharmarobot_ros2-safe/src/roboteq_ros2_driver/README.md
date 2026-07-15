@@ -193,6 +193,87 @@ absolute drain, 20 ms drain quiet, 100 ms synchronization, and 50 ms post-sync
 check) are retained from the earlier bounded diagnostic evidence rather than
 being weakened by the faster ACK observations.
 
+Staged production tracing later proved a separate startup-validation issue in
+the query helper rather than in the controller or serial protocol. The startup
+path could write `?FID\r`, receive and classify the complete expected
+`FID=Roboteq v1.8d SBL2XXX 1/8/2018\r` reply, and still return failure because
+post-reply quiet verification hit its absolute diagnostic-drain deadline
+without receiving any further bytes. Production now treats a valid expected
+reply plus quiet expiry with no trailing bytes as synchronized success. The
+path still fails closed on partial trailing bytes, unexpected complete lines,
+duplicate or malformed replies, ACK contamination, stale bytes, byte-cap
+overflow, or absence of the expected reply before the query deadline.
+
+### Phase 5B completed startup and stop path
+
+The implemented Option E startup and runtime stop sequence is:
+
+1. Passively drain startup bytes under bounded quiet/absolute/byte limits.
+2. Write the exact four-command zero batch: `!G 1 0`, `!G 2 0`, `!S 1 0`,
+   `!S 2 0`.
+3. Own exactly four `+\r` acknowledgement lines.
+4. Require the post-ACK quiet boundary before any query.
+5. Send startup `?FID\r` and require one classified expected reply.
+6. Enter `waiting_for_fresh_command` only after the validated startup query.
+7. On runtime stop, write the same exact four-command zero batch.
+8. Own exactly four `+\r` acknowledgement lines for that measured stop.
+9. Send post-stop `?FF\r` for synchronization/diagnostic confirmation.
+10. Fail closed into bounded recovery and reconnect if any ownership or query
+    ambiguity remains unresolved.
+
+The validation stages for this sequence were:
+
+- H1: 80/80 individual zero commands returned exactly one `+\r`.
+- H2: 30/30 exact four-command stop batches returned exactly four `+\r`
+  lines.
+- H3: 40/40 stop-batch-followed-by-query transactions returned four owned
+  ACKs and then a clean `FID=` or `FF=` reply with no contamination.
+- Staged diagnosis: raw query, individual-ACK, full-batch, and stop-then-query
+  hardware checks isolated startup/query helper behavior from hardware.
+- One-attempt production regression: startup drain, startup stop, `?FID\r`,
+  measured stop, and post-stop `?FF\r` succeeded on the production path after
+  the query-helper correction.
+- Final Phase 5B batch: 30/30 production attempts passed in
+  `validation_evidence/roboteq-final-phase5b-stop-ff-20260715T134630Z/00-final-phase5b-stop-ff.jsonl`
+  with SHA-256
+  `d3c6750ca92b37bc540a16fff05ebf5f8fa9d54e09d924c099481b1a7a19223a`.
+
+Final Phase 5B hardware evidence established:
+
+- startup drain was clean;
+- startup stop owned exactly four `+\r` ACKs;
+- startup `?FID\r` validation succeeded;
+- the worker reached `waiting_for_fresh_command`;
+- all 30 measured stops owned exactly four `+\r` ACKs;
+- all post-stop diagnostics returned exactly `FF=0\r`;
+- final framing remained synchronized;
+- stop-write latency min/median/p95/max was 6.477/7.321/8.137/8.166 ms.
+
+That latency measures `requestStop()` to serial-library/OS write acceptance of
+the complete zero batch only. It does not establish controller execution time,
+physical wheel stop time, or STO actuation.
+
+```mermaid
+flowchart TD
+    A[connection open] --> B[startup drain]
+    B -->|clean| C[startup stop batch<br/>!G1 0 !G2 0 !S1 0 !S2 0]
+    B -->|ambiguous| Z[fail closed<br/>recovery or reconnect]
+    C --> D[own 4 ACK lines]
+    D -->|quiet verified| E[startup query ?FID]
+    D -->|missing extra partial or unexpected| Z
+    E --> F[classify one expected FID reply]
+    F -->|valid and no trailing bytes| G[waiting_for_fresh_command]
+    F -->|unexpected partial stale ACK or malformed| Z
+    G --> H[runtime requestStop priority path]
+    H --> I[write exact 4-command zero batch]
+    I --> J[own 4 ACK lines]
+    J -->|quiet verified| K[post-stop query ?FF]
+    J -->|ambiguous| Z
+    K -->|valid FF and quiet| G
+    K -->|unexpected partial stale or malformed| Z
+    Z --> R[bounded recovery then reconnect]
+```
+
 ### Continuing-runtime stop validation seam
 
 `SerialIoWorker::requestStop()` is a continuing-runtime safety request; unlike
@@ -388,9 +469,11 @@ Agent 6 defined, but did not execute, these additional levels:
    optional commissioning evidence.
 
 Levels 0 and 1 require separate ROS/runtime or serial-path approval. Level 2
-requires explicit hardware approval. Hardware validation is deferred unless
-separately approved; real command latency, reconnect behavior, and odometry
-feedback timing therefore remain unverified.
+requires explicit hardware approval. Broader hardware validation remains
+deferred unless separately approved; Phase 5B completed the production
+stop/write-acceptance scope, but reconnect behavior outside that scope,
+odometry feedback timing, and physical safety-chain behavior remain unverified
+here.
 
 ## Odometry covariance
 
@@ -578,10 +661,12 @@ test motor directions using the Roboteq utility software.
 
 ### Hardware note
 
-This repository does not contain a completed hardware validation record for the
-current serial-worker, watchdog, reconnect, odometry, covariance, and
-diagnostics implementation. Hardware validation remains a separate approved
-step.
+This repository now contains a completed Phase 5B hardware-validation record
+for the approved stop-command ownership and write-acceptance timing scope. It
+does not yet contain a complete end-to-end hardware validation record for the
+full serial-worker, watchdog, reconnect, odometry, covariance, diagnostics,
+and external safety-chain behavior. Broader hardware validation remains a
+separate approved step.
 [original work for ROS1](https://github.com/ecostech/roboteq_diff_driver)
 ## Authors
 

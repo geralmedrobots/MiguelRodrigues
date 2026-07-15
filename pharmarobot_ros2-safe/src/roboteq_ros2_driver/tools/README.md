@@ -350,3 +350,84 @@ python3 src/roboteq_ros2_driver/tools/roboteq_timeout_resync_validation.py \
   --port /dev/roboteq --baud 115200 --output "$NEW_EVIDENCE" \
   bounded-resync --deadline APPROVED_SECONDS --attempts APPROVED_COUNT
 ```
+
+## Phase 5B stop-latency validation status
+
+Phase 5B is complete for the production stop/write-acceptance path. The
+validated procedure is:
+
+1. startup drain;
+2. exact four-command zero stop batch;
+3. ownership of exactly four `+\r` acknowledgements;
+4. post-ACK quiet verification;
+5. startup `?FID\r` validation;
+6. transition to `waiting_for_fresh_command`;
+7. measured runtime stop with the same exact four-command zero batch;
+8. ownership of exactly four `+\r` acknowledgements for that stop;
+9. post-stop `?FF\r` verification;
+10. fail-closed bounded recovery and reconnect on ambiguity.
+
+The motivating failures were two production-path integration issues, not a
+proven Roboteq protocol defect:
+
+- unowned command acknowledgements could contaminate later diagnostics if the
+  stop batch did not own its four `+\r` lines before a query;
+- startup validation could still fail after a valid classified `FID=` reply if
+  the old post-reply quiet check reached its absolute deadline without any new
+  bytes.
+
+The final production evidence batch is:
+
+- evidence:
+  `src/roboteq_ros2_driver/validation_evidence/roboteq-final-phase5b-stop-ff-20260715T134630Z/00-final-phase5b-stop-ff.jsonl`
+- SHA-256:
+  `d3c6750ca92b37bc540a16fff05ebf5f8fa9d54e09d924c099481b1a7a19223a`
+- result: 30/30 attempts passed
+- startup: clean drain, startup stop owned four ACKs, startup `?FID\r`
+  succeeded, worker entered `waiting_for_fresh_command`
+- measured stop: every stop owned four ACKs, every post-stop diagnostic
+  returned `FF=0\r`, final framing remained synchronized
+- stop-write latency min/median/p95/max: 6.477/7.321/8.137/8.166 ms
+
+This latency means `requestStop()` to serial-library/OS write acceptance only.
+It is not physical motor stop time and does not prove STO actuation. Phase 4
+remains blocked until the real LiDAR/OSSD/STO safety chain is implemented and
+validated separately.
+
+## Phase 5B tools
+
+`tools/phase5b/` contains the fixed-mode hardware-validation executables used
+for the completed Phase 5B stop-latency work. They remain excluded from normal
+builds and do not authorize hardware execution by themselves.
+
+The completed Phase 5B record documents the Option E production procedure:
+
+- bounded startup drain before any ownership-sensitive transaction;
+- exact four-command startup stop batch `!G 1 0\r`, `!G 2 0\r`,
+  `!S 1 0\r`, `!S 2 0\r`;
+- ownership of exactly four `+\r` ACKs for that startup stop;
+- post-ACK quiet verification before startup `?FID`;
+- startup `?FID` validation;
+- exact four-command production stop batch `!G 1 0\r`, `!G 2 0\r`,
+  `!S 1 0\r`, `!S 2 0\r`;
+- ownership of exactly four `+\r` ACKs for each runtime stop;
+- post-ACK quiet verification before the follow-up query;
+- measured runtime `requestStop()` sample;
+- post-stop `?FF` verification;
+- fail-closed unresolved framing and reconnect behavior that returns to
+  `waiting_for_fresh_command`.
+
+Validation progressed through H1, H2, H3, staged diagnosis, one production
+regression attempt after the startup fix, and a final 30-attempt production
+batch. The final evidence file is
+`../validation_evidence/roboteq-final-phase5b-stop-ff-20260715T134630Z/00-final-phase5b-stop-ff.jsonl`
+with SHA-256
+`d3c6750ca92b37bc540a16fff05ebf5f8fa9d54e09d924c099481b1a7a19223a`. The
+documented result is 30/30 passed with clean startup drain, exactly four owned
+`+\r` ACKs at startup and runtime, successful startup `?FID`, synchronized
+final framing, `FF=0\r` for every post-stop diagnostic, and stop latency
+min/median/p95/max of 6.477/7.321/8.137/8.166 ms.
+
+Those latency numbers are limited to `requestStop()` through full serial-write
+acceptance by the OS/library path. They do not establish physical stop timing,
+STO timing, or Phase 4 safety-chain behavior.
