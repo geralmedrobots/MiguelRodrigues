@@ -1,0 +1,4 @@
+{"type":"session_start","mode":"h1-single","port":"/dev/roboteq","baud":115200,"attempts":20,"capture_deadline_ms":100,"quiet_period_ms":20,"max_bytes":4096,"query_deadline_ms":100,"command":"G1"}
+{"type":"preexisting_bytes","attempt":1,"connection_generation":1,"received_raw":"+\r+\r+\r+\r","received_hex":"2b0d2b0d2b0d2b0d","received_visible":"+\r+\r+\r+\r","received_byte_count":8,"capture_ended_by_quiet":true,"capture_ended_by_deadline":false}
+{"type":"abort","reason":"unexpected preexisting serial bytes before attempt"}
+{"type":"session_end","exit_code":1}

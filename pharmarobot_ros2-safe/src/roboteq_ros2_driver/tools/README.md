@@ -287,3 +287,66 @@ python3 src/roboteq_ros2_driver/tools/roboteq_diagnostic_capture.py \
 
 Review the one-cycle evidence before proceeding. A ten-cycle collection is a
 separate subsequent hardware action and requires separate explicit approval.
+
+## Phase 3 timeout and resynchronisation validation
+
+`roboteq_timeout_resync_validation.py` is a diagnostic-only Phase 3 harness.
+It reuses the Phase 2 serial endpoint, strict parser, and immutable allowlist;
+there is no arbitrary-query argument. Its only modes are `baseline`,
+`boundary`, `reconnect`, and `bounded-resync`. The output is a newly created
+schema-version-3 JSONL file. Existing output is refused, and every record is
+flushed and `fsync`ed before another serial write can occur. Transaction
+evidence distinguishes the intended allowlisted request from the exact prefix
+actually transmitted if a low-level write times out after partial progress.
+
+The complete response deadline starts immediately before the write and covers
+both the bounded write and receipt of one complete framed response. A timeout
+marks telemetry `UNKNOWN` and framing unresolved. Normal transactions are then
+blocked. Boundary mode permits only a distinguishable FF-to-FS or FS-to-FF
+diagnostic probe and closes afterward. Reconnect mode closes the descriptor,
+increments the connection generation on open, passively captures startup
+bytes, requires bounded continuous quiet, and accepts only a strictly framed
+fresh synchronisation reply. Bytes isolated during startup are retained and a
+reply matching the timed-out query is classified as old-generation input.
+
+Bounded resynchronisation drains until 100 ms from the timed-out write and
+requires 20 ms of continuous quiet, with an absolute 120 ms bound and a
+4096-byte cap. Only complete echo, standalone `+`, and at most one strictly
+valid reply to the timed-out query are classifiable. Partial, wrong, duplicate,
+oversized, nonquiet, clock, or read-error input is ambiguous and forces the
+reconnect fallback. A different FF/FS synchronisation query is sent only after
+a clean drain. After every recovery synchronisation response, a separate
+byte-capped observation requires 20 ms of continuous quiet within a hard 50 ms
+bound. Any delayed, duplicate, partial, or unclassifiable byte makes framing
+unresolved. Bounded recovery then reconnects; reconnect recovery fails closed.
+A mismatch or failure also forces reconnect. Unresolved framing never permits
+normal polling.
+
+Offline tests never open a serial device:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 src/roboteq_ros2_driver/tools/test_roboteq_timeout_resync_validation.py
+```
+
+Hardware runs require the per-stage approval and ownership procedure in
+`AGENTS.md`. The examples below document syntax only; do not combine them or
+run a later threshold/recovery policy under an earlier approval:
+
+```bash
+python3 src/roboteq_ros2_driver/tools/roboteq_timeout_resync_validation.py \
+  --port /dev/roboteq --baud 115200 --output "$NEW_EVIDENCE" \
+  baseline --deadline 0.100
+
+python3 src/roboteq_ros2_driver/tools/roboteq_timeout_resync_validation.py \
+  --port /dev/roboteq --baud 115200 --output "$NEW_EVIDENCE" \
+  boundary --deadline 0.030 --attempts 1
+
+python3 src/roboteq_ros2_driver/tools/roboteq_timeout_resync_validation.py \
+  --port /dev/roboteq --baud 115200 --output "$NEW_EVIDENCE" \
+  reconnect --deadline APPROVED_SECONDS --attempts APPROVED_COUNT
+
+python3 src/roboteq_ros2_driver/tools/roboteq_timeout_resync_validation.py \
+  --port /dev/roboteq --baud 115200 --output "$NEW_EVIDENCE" \
+  bounded-resync --deadline APPROVED_SECONDS --attempts APPROVED_COUNT
+```

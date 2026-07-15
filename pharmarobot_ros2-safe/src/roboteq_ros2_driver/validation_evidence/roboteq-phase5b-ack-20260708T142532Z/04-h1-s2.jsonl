@@ -1,0 +1,3 @@
+{"type":"session_start","mode":"h1-single","port":"/dev/roboteq","baud":115200,"attempts":20,"capture_deadline_ms":100,"quiet_period_ms":20,"max_bytes":4096,"query_deadline_ms":100,"command":"S2"}
+{"type":"abort","reason":"serial open failed"}
+{"type":"session_end","exit_code":1}

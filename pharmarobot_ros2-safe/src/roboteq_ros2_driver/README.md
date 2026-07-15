@@ -155,13 +155,98 @@ serial failure or reconnect, commands received before or during the disconnect
 are invalidated; non-zero motion requires a fresh post-reconnect
 `/cmd_vel/safe` message.
 
-The serial transport performs bounded complete command writes. Roboteq commands
-such as `!G`, `!S`, and configuration commands are not required to return a
-`+` acknowledgment because the tested firmware may not provide one. Queries
-such as `?FID`, `?CR`, and configuration readback require bounded validated
-responses. Query handling skips command echoes, stale unrelated lines, and `+`
-lines until the expected response is received; explicit `-`, malformed,
-truncated, oversized, or timed-out responses fail the transaction.
+The installed SBL2360 was characterized before selecting the reply-ownership
+policy. H1 observed one `+\r` acknowledgement after every individual zero
+command in 80/80 attempts. H2 observed exactly four acknowledgements after the
+exact four-command stop batch in 30/30 attempts. H3 collected those four lines,
+required a 20 ms quiet interval, and then received the owning `FID=...\r` or
+`FF=...\r` query reply without contamination in 40/40 attempts.
+
+Production therefore uses one synchronous transaction owner and one shared line
+classifier. A command batch is written in full before reply collection begins;
+it then owns exactly one `+\r` per command within a 50 ms absolute deadline, a
+20 ms post-final-ACK quiet interval, and a 64-byte cap. Missing, extra, partial,
+malformed, delayed, or typed query lines during ACK collection make ownership
+unresolved. Queries never skip ACKs or unrelated typed lines: they own one
+validated expected reply followed by bounded quiet verification. Unresolved
+ownership blocks normal traffic, invalidates motion, and enters one bounded
+drain/synchronization attempt before reconnect fallback.
+
+The architecture review compared five policies. Per-command ACK waiting (A)
+adds avoidable delay between the four safety writes. Stop-only batch collection
+(B) leaves ordinary motion-command replies without an owner. A fully
+asynchronous parser/arbiter (C) resolves ownership but adds concurrency and
+lifecycle complexity not justified by the observed ordered controller stream.
+Drain-and-resynchronize after every stop (D) can discard provenance-bearing
+replies and hide a controller or transport fault. The selected hybrid
+transaction-owner policy (E) keeps the simpler single worker and synchronous
+transport, writes the stop batch without inter-command waits, then owns its
+bounded ACK set before allowing any query or normal traffic.
+
+The command deadline and caps use conservative margins over the installed
+controller evidence. The 50 ms absolute ACK deadline is approximately nine
+times the H2 maximum complete-burst latency of 5.548 ms while still containing
+the required 20 ms post-final-ACK quiet interval. The 64-byte cap is eight times
+the expected eight-byte `+\r+\r+\r+\r` stop reply. The normal 100 ms query
+deadline and existing recovery bounds (100 ms delayed-reply horizon, 120 ms
+absolute drain, 20 ms drain quiet, 100 ms synchronization, and 50 ms post-sync
+check) are retained from the earlier bounded diagnostic evidence rather than
+being weakened by the faster ACK observations.
+
+### Continuing-runtime stop validation seam
+
+`SerialIoWorker::requestStop()` is a continuing-runtime safety request; unlike
+`stop()`, it does not terminate or join the worker. One pending bit is used, so
+repeated requests coalesce under the same correlation ID and cannot create an
+unbounded queue. Requesting a stop immediately invalidates the desired command
+and raises the minimum acceptable motion sequence. The worker services the bit
+before command, encoder, diagnostic, or recovery work and emits only the exact
+four-command production zero batch: `!G 1 0`, `!G 2 0`, `!S 1 0`, and
+`!S 2 0`. Commands submitted before completion of that stop are invalidated;
+motion requires a later fresh command.
+
+If a runtime stop becomes pending after the loop's initial priority check but
+before bounded diagnostic recovery begins, recovery entry is deferred until the
+next loop iteration so the pending stop still executes before that recovery
+attempt starts.
+
+A diagnostic timeout still permits exactly one bounded recovery attempt. The
+transport drains until the configured absolute/quiet/byte bounds, validates any
+delayed reply, and calls back into the worker before writing the distinct
+synchronization query. A pending stop is completed at that checkpoint, then the
+same recovery resumes. A partial stop write, write timeout, invalid drained
+framing, failed synchronization, or ambiguous post-synchronization bytes fails
+the attempt and enters the existing stop/close/reconnect path. Reconnect
+invalidates prior state and returns to `waiting_for_fresh_command`.
+
+The transport no longer calls `serial::Serial::flush()`, whose POSIX
+implementation uses unbounded `tcdrain()`. “Transmit completion” in worker and
+validation observations means that every byte was accepted by the serial
+library/operating-system write path. It does not mean physical UART
+transmission, controller execution, or physical stopping. Each write is bounded by the serial timeout configured by this
+driver as `max(serial_read_timeout_ms, serial_write_timeout_ms)`; therefore the
+four independent writes in a stop batch have a write-path bound of four times
+that timeout, excluding scheduler delay. A partial return, exception, or
+timeout is a transport failure and triggers recovery/reconnect handling. Stop
+observers report `write_accepted` and 28 bytes only after the complete four-command
+batch was accepted; ACK ambiguity after a complete write is reported separately
+through framing/recovery state.
+
+Optional stop and diagnostic observers default to empty and are not set by the
+production node. Callbacks run without the worker state mutex, exceptions are
+contained, and unused observers do not affect control flow. Events carry
+steady-clock timestamps, correlation IDs, connection generations, byte counts,
+and diagnostic phases covering selection/write/read, timeout, drain,
+synchronization, fallback, and reconnect. Testing delays or barriers held by an
+observer are synthetic fault injection and are excluded from normal latency.
+
+The default-disabled Phase 5B harness and its restrictions are documented in
+`tools/phase5b/README.md`. Its injected fallback evidence is labelled
+`synthetic reconnect-fallback path validation` and cannot be represented as a
+naturally ambiguous physical-controller reply. When a preselection or normal
+attempt reaches unresolved diagnostic framing after a valid stop sample, the
+harness records that partial result explicitly instead of waiting for an
+unreachable normal terminal phase.
 
 New serial parameters:
 

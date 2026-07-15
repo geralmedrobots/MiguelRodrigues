@@ -32,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -87,7 +88,33 @@ struct DiagnosticTelemetry
   std::chrono::steady_clock::time_point timestamp{};
   std::chrono::milliseconds age{0};
   uint64_t connection_generation{0};
+  uint64_t correlation_id{0};
+  std::chrono::steady_clock::time_point started_at{};
+  std::chrono::steady_clock::time_point write_accepted_at{};
+  std::chrono::steady_clock::time_point first_byte_at{};
+  std::chrono::steady_clock::time_point last_byte_at{};
+  std::chrono::steady_clock::time_point timeout_at{};
+  bool delimiter_observed{false};
   std::string failure_reason{"not sampled"};
+};
+
+struct DiagnosticResultEvent
+{
+  DiagnosticQueryKind query{DiagnosticQueryKind::firmware_id};
+  DiagnosticTransportStatus status{DiagnosticTransportStatus::failure};
+  SerialFramingState framing_state{SerialFramingState::synchronized};
+  std::string response;
+  std::string raw_bytes;
+  std::string reason;
+  bool delimiter_observed{false};
+  std::chrono::steady_clock::time_point started_at{};
+  std::chrono::steady_clock::time_point write_accepted_at{};
+  std::chrono::steady_clock::time_point first_byte_at{};
+  std::chrono::steady_clock::time_point last_byte_at{};
+  std::chrono::steady_clock::time_point timeout_at{};
+  std::chrono::steady_clock::time_point completed_at{};
+  uint64_t connection_generation{0};
+  uint64_t correlation_id{0};
 };
 
 enum class SerialConnectionState
@@ -132,6 +159,24 @@ struct TimeoutStopEvent
   bool write_succeeded{false};
 };
 
+enum class StopRequestPhase
+{
+  requested,
+  coalesced,
+  write_started,
+  write_accepted,
+  write_failed,
+};
+
+struct StopRequestEvent
+{
+  StopRequestPhase phase{StopRequestPhase::requested};
+  std::chrono::steady_clock::time_point timestamp{};
+  uint64_t correlation_id{0};
+  uint64_t connection_generation{0};
+  std::size_t byte_count{0};
+};
+
 struct SerialWorkerConfig
 {
   bool open_loop{false};
@@ -141,11 +186,16 @@ struct SerialWorkerConfig
   std::chrono::milliseconds encoder_poll_period{50};
   std::chrono::milliseconds reconnect_interval{1000};
   std::chrono::milliseconds diagnostic_query_timeout{100};
+  StartupDrainBounds startup_drain_bounds{};
+  CommandTransactionBounds command_transaction_bounds{};
   DiagnosticRecoveryBounds diagnostic_recovery_bounds{};
   bool require_fresh_command_after_reconnect{true};
   std::vector<configuration::RequiredControllerSetting> required_settings;
   std::function<void(const std::string &)> log_callback;
   std::function<void(const TimeoutStopEvent &)> timeout_stop_observer;
+  std::function<void(const StopRequestEvent &)> stop_request_observer;
+  std::function<void(const DiagnosticPhaseEvent &)> diagnostic_phase_observer;
+  std::function<void(const DiagnosticResultEvent &)> diagnostic_result_observer;
 };
 
 class SerialIoWorker
@@ -161,6 +211,7 @@ public:
 
   void start();
   void stop();
+  uint64_t requestStop();
   void submitCommand(double channel_1_mps, double channel_2_mps);
   void invalidateCommands();
   std::optional<EncoderSample> takeLatestEncoderSample();
@@ -172,15 +223,33 @@ public:
   std::optional<DiagnosticTelemetry> latestDiagnosticTelemetry() const;
 
 private:
+  enum class DiagnosticRecoveryAttempt
+  {
+    completed,
+    deferred,
+    failed,
+  };
+
   void run();
   bool connectAndValidate(std::string & error);
-  bool sendStop(const char * reason, std::string & error);
+  bool sendStop(
+    const char * reason, std::string & error,
+    std::chrono::steady_clock::time_point * write_accepted_at = nullptr,
+    bool * write_fully_accepted = nullptr);
+  bool sendOwnedCommands(
+    const std::vector<std::string> & commands, std::string & error,
+    std::chrono::steady_clock::time_point * write_accepted_at = nullptr,
+    bool * write_fully_accepted = nullptr);
+  void scheduleOwnershipRecovery(std::chrono::steady_clock::time_point started_at);
+  bool executePendingRuntimeStop(std::string & error);
+  void observeStopRequest(const StopRequestEvent & event) const noexcept;
+  void observeDiagnosticPhase(const DiagnosticPhaseEvent & event) const noexcept;
   void observeTimeoutStop(const TimeoutStopEvent & event) const noexcept;
   bool sendDesiredCommand(const DesiredMotorCommand & command, std::string & error);
   bool validateControllerConfiguration(std::string & error);
   bool validateCommunication(std::string & error);
   bool pollEncoder(std::string & error);
-  bool performDiagnosticRecovery(std::string & error);
+  DiagnosticRecoveryAttempt performDiagnosticRecovery(std::string & error);
   bool executeDiagnosticQuery(DiagnosticQueryKind query);
   void invalidateDiagnosticTelemetry(const std::string & reason);
   void markFailure(const std::string & error);
@@ -201,7 +270,13 @@ private:
   uint64_t minimum_motion_sequence_{0};
   bool applied_stopped_{true};
   bool transport_open_{false};
+  bool last_command_transaction_owned_{false};  // Accessed only by the worker thread.
   bool stop_requested_{false};
+  bool runtime_stop_pending_{false};
+  uint64_t runtime_stop_correlation_{0};
+  uint64_t next_validation_correlation_{0};
+  uint64_t last_recovery_correlation_{0};
+  std::chrono::steady_clock::time_point runtime_stop_requested_at_{};
   bool worker_started_{false};
   std::optional<EncoderSample> latest_encoder_sample_;
   std::optional<EncoderSample> last_encoder_sample_;
@@ -213,6 +288,7 @@ private:
   std::optional<DiagnosticTransaction> timed_out_diagnostic_;
   std::chrono::steady_clock::time_point timed_out_diagnostic_started_at_{};
   bool diagnostic_recovery_pending_{false};
+  bool diagnostic_recovery_start_reserved_{false};
   std::optional<DiagnosticTelemetry> latest_diagnostic_telemetry_;
   SerialConnectionState state_{SerialConnectionState::disconnected};
   std::thread worker_thread_;

@@ -1,0 +1,9 @@
+{"type":"stop","phase":"requested","correlation":1,"generation":1,"monotonic_ns":12160865955382,"accepted_bytes":0}
+{"type":"stop","phase":"write_started","correlation":1,"generation":1,"monotonic_ns":12160871282171,"accepted_bytes":0}
+{"type":"stop","phase":"write_accepted","correlation":1,"generation":1,"monotonic_ns":12160875310815,"accepted_bytes":28}
+{"type":"diagnostic_phase","phase":"selected","correlation":2,"generation":1,"monotonic_ns":12160879246864,"command":"?FF?","byte_count":0}
+{"type":"diagnostic_phase","phase":"write_started","correlation":2,"generation":1,"monotonic_ns":12160883200568,"command":"?FF?","byte_count":0}
+{"type":"diagnostic_phase","phase":"write_accepted","correlation":2,"generation":1,"monotonic_ns":12160887310562,"command":"?FF?","byte_count":4}
+{"type":"diagnostic_phase","phase":"waiting_for_first_byte","correlation":2,"generation":1,"monotonic_ns":12160891694825,"command":"?FF?","byte_count":0}
+{"type":"diagnostic_phase","phase":"first_byte_received","correlation":2,"generation":1,"monotonic_ns":12160895652409,"command":"?FF?","byte_count":1}
+{"type":"diagnostic_phase","phase":"timeout_or_unresolved","correlation":2,"generation":1,"monotonic_ns":12160899858809,"command":"?FF?","byte_count":2}

@@ -1,0 +1,11 @@
+{"type":"stop","phase":"requested","correlation":1,"generation":1,"monotonic_ns":86930504409513,"accepted_bytes":0}
+{"type":"stop","phase":"write_started","correlation":1,"generation":1,"monotonic_ns":86930509197610,"accepted_bytes":0}
+{"type":"stop","phase":"write_accepted","correlation":1,"generation":1,"monotonic_ns":86930512616024,"accepted_bytes":28}
+{"type":"diagnostic_phase","phase":"selected","correlation":2,"generation":1,"monotonic_ns":86930516178676,"command":"?FF\r","byte_count":0}
+{"type":"diagnostic_phase","phase":"write_started","correlation":2,"generation":1,"monotonic_ns":86930519516623,"command":"?FF\r","byte_count":0}
+{"type":"diagnostic_phase","phase":"write_accepted","correlation":2,"generation":1,"monotonic_ns":86930523144992,"command":"?FF\r","byte_count":4}
+{"type":"diagnostic_phase","phase":"waiting_for_first_byte","correlation":2,"generation":1,"monotonic_ns":86930526412221,"command":"?FF\r","byte_count":0}
+{"type":"diagnostic_phase","phase":"first_byte_received","correlation":2,"generation":1,"monotonic_ns":86930530007390,"command":"?FF\r","byte_count":1}
+{"type":"diagnostic_phase","phase":"timeout_or_unresolved","correlation":2,"generation":1,"monotonic_ns":86930533372533,"command":"?FF\r","byte_count":2}
+{"type":"attempt_result","attempt":1,"scenario":"preselection","outcome":"partial_unresolved","success":false,"connection_state":"waiting_for_fresh_command","framing_state":"synchronized"}
+{"type":"diagnostic_result","query":"FF","status":"failure","framing_state":"synchronized","correlation":2,"generation":1,"monotonic_started_ns":86930519512733,"monotonic_write_accepted_ns":86930523144733,"monotonic_first_byte_ns":86930530007149,"monotonic_last_byte_ns":86930533357540,"monotonic_timeout_ns":86930533372375,"monotonic_completed_ns":86930533372375,"delimiter_observed":true,"byte_count":2,"raw":"+\r","hex":"2b0d","response":"+","reason":"diagnostic response prefix or payload is malformed"}

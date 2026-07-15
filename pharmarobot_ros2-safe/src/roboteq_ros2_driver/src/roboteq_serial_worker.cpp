@@ -175,11 +175,6 @@ DiagnosticTransaction synchronization_transaction(
   return {"?FF\r", "FF=", timeout};
 }
 
-bool is_zero_command(const DesiredMotorCommand & command)
-{
-  return std::abs(command.channel_1_mps) < 1e-12 && std::abs(command.channel_2_mps) < 1e-12;
-}
-
 }  // namespace
 
 SerialIoWorker::SerialIoWorker(
@@ -225,6 +220,32 @@ void SerialIoWorker::stop()
     std::lock_guard<std::mutex> lock(state_mutex_);
     worker_started_ = false;
   }
+}
+
+uint64_t SerialIoWorker::requestStop()
+{
+  StopRequestEvent event;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    desired_command_.valid = false;
+    minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
+    diagnostic_recovery_start_reserved_ = false;
+    if (runtime_stop_pending_) {
+      event = StopRequestEvent{
+        StopRequestPhase::coalesced, std::chrono::steady_clock::now(),
+        runtime_stop_correlation_, connection_generation_, 0};
+    } else {
+      runtime_stop_pending_ = true;
+      runtime_stop_correlation_ = ++next_validation_correlation_;
+      runtime_stop_requested_at_ = std::chrono::steady_clock::now();
+      event = StopRequestEvent{
+        StopRequestPhase::requested, runtime_stop_requested_at_,
+        runtime_stop_correlation_, connection_generation_, 0};
+    }
+  }
+  observeStopRequest(event);
+  state_cv_.notify_all();
+  return event.correlation_id;
 }
 
 void SerialIoWorker::submitCommand(double channel_1_mps, double channel_2_mps)
@@ -371,8 +392,29 @@ void SerialIoWorker::run()
           SerialConnectionState::waiting_for_fresh_command : SerialConnectionState::ready;
         status_update_sequence_++;
       }
+      uint64_t reconnect_correlation = 0;
+      uint64_t reconnect_generation = 0;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        reconnect_correlation = last_recovery_correlation_;
+        reconnect_generation = connection_generation_;
+        last_recovery_correlation_ = 0;
+      }
+      if (reconnect_correlation != 0) {
+        observeDiagnosticPhase(
+          DiagnosticPhaseEvent{
+            DiagnosticPhase::reconnect_complete, std::chrono::steady_clock::now(),
+            reconnect_correlation, reconnect_generation, "", 0});
+      }
       next_encoder_poll = std::chrono::steady_clock::now() + config_.encoder_poll_period;
       next_reconnect = std::chrono::steady_clock::time_point::max();
+    }
+
+    std::string priority_stop_error;
+    if (!executePendingRuntimeStop(priority_stop_error)) {
+      markFailure(priority_stop_error);
+      next_reconnect = std::chrono::steady_clock::now() + config_.reconnect_interval;
+      continue;
     }
 
     DesiredMotorCommand command;
@@ -399,8 +441,8 @@ void SerialIoWorker::run()
     }
 
     std::string error;
-    const bool command_permitted = have_command &&
-      (framing_state_ == SerialFramingState::synchronized || is_zero_command(command));
+    const bool command_permitted =
+      have_command && framing_state_ == SerialFramingState::synchronized;
     if (timeout_stop_required) {
       observeTimeoutStop(
         TimeoutStopEvent{
@@ -414,14 +456,19 @@ void SerialIoWorker::run()
           std::chrono::steady_clock::now(),
           timed_out_command_sequence,
           false});
-      const bool stop_succeeded = sendStop("command timeout", error);
+      std::chrono::steady_clock::time_point stop_write_accepted_at;
+      bool stop_write_fully_accepted = false;
+      const bool stop_transaction_continues = sendStop(
+        "command timeout", error, &stop_write_accepted_at, &stop_write_fully_accepted);
       observeTimeoutStop(
         TimeoutStopEvent{
           TimeoutStopEventPhase::zero_write_completed,
-          std::chrono::steady_clock::now(),
+          stop_write_fully_accepted &&
+          stop_write_accepted_at != std::chrono::steady_clock::time_point{} ?
+          stop_write_accepted_at : std::chrono::steady_clock::now(),
           timed_out_command_sequence,
-          stop_succeeded});
-      if (!stop_succeeded) {
+          stop_write_fully_accepted});
+      if (!stop_transaction_continues) {
         markFailure(error);
         next_reconnect = std::chrono::steady_clock::now() + config_.reconnect_interval;
         continue;
@@ -438,10 +485,12 @@ void SerialIoWorker::run()
         continue;
       }
       std::lock_guard<std::mutex> lock(state_mutex_);
-      applied_sequence_ = command.sequence;
-      applied_stopped_ =
-        std::abs(command.channel_1_mps) < 1e-12 && std::abs(command.channel_2_mps) < 1e-12;
-      state_ = SerialConnectionState::ready;
+      if (last_command_transaction_owned_) {
+        applied_sequence_ = command.sequence;
+        applied_stopped_ =
+          std::abs(command.channel_1_mps) < 1e-12 && std::abs(command.channel_2_mps) < 1e-12;
+        state_ = SerialConnectionState::ready;
+      }
       status_update_sequence_++;
     }
 
@@ -452,18 +501,19 @@ void SerialIoWorker::run()
       recovery_pending = diagnostic_recovery_pending_;
       if (recovery_pending) {
         const auto recovery_claimed_at = std::chrono::steady_clock::now();
+        const bool pending_runtime_stop_now = runtime_stop_pending_;
         const bool timeout_stop_now = desired_command_.valid && !applied_stopped_ &&
           recovery_claimed_at - desired_command_.received_time >= config_.command_timeout;
-        const bool pending_command_now = desired_command_.valid &&
-          desired_command_.sequence > applied_sequence_ &&
-          desired_command_.sequence >= minimum_motion_sequence_;
-        const bool pending_zero_stop_now = pending_command_now &&
-          is_zero_command(desired_command_);
-        recovery_can_start = !timeout_stop_now && !pending_zero_stop_now;
+        recovery_can_start =
+          !pending_runtime_stop_now && !timeout_stop_now;
+        diagnostic_recovery_start_reserved_ = recovery_can_start;
+      } else {
+        diagnostic_recovery_start_reserved_ = false;
       }
     }
     if (recovery_pending && recovery_can_start) {
-      if (!performDiagnosticRecovery(error)) {
+      const auto recovery_result = performDiagnosticRecovery(error);
+      if (recovery_result == DiagnosticRecoveryAttempt::failed) {
         markFailure(error);
         next_reconnect = std::chrono::steady_clock::now() + config_.reconnect_interval;
       }
@@ -513,6 +563,7 @@ void SerialIoWorker::run()
       nextWakeTime(std::chrono::steady_clock::now(), next_encoder_poll, next_reconnect),
       [this]() {
         return stop_requested_ ||
+        runtime_stop_pending_ ||
         queued_diagnostic_query_.has_value() || diagnostic_recovery_pending_ ||
         (desired_command_.valid &&
         desired_command_.sequence > applied_sequence_ &&
@@ -552,15 +603,51 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
       connection_generation_++;
       framing_state_ = SerialFramingState::synchronized;
       diagnostic_recovery_pending_ = false;
+      diagnostic_recovery_start_reserved_ = false;
       timed_out_diagnostic_.reset();
       queued_diagnostic_query_.reset();
       invalidateDiagnosticTelemetry("connection generation changed");
       status_update_sequence_++;
     }
+    const auto startup_drain = transport_->drainStartupInput(config_.startup_drain_bounds);
+    if (!startup_drain.synchronized) {
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        framing_state_ = SerialFramingState::unresolved;
+        status_update_sequence_++;
+      }
+      error = "connectAndValidate: phase=connection category=transport_error "
+        "operation=startup_input_drain received=\"" +
+        visible_text(startup_drain.raw_bytes) + "\" reason=" + visible_text(startup_drain.reason);
+      return false;
+    }
+    if (!executePendingRuntimeStop(error)) {
+      error = "connectAndValidate: phase=connection category=transport_error "
+        "operation=pending_runtime_stop reason=" + visible_text(error);
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (framing_state_ != SerialFramingState::synchronized ||
+        diagnostic_recovery_pending_)
+      {
+        error = "connectAndValidate: pending stop reply ownership is unresolved";
+        return false;
+      }
+    }
     if (!sendStop("startup/reconnect", error)) {
       error = "connectAndValidate: phase=connection category=transport_error "
         "operation=startup_reconnect_stop reason=" + visible_text(error);
       return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (framing_state_ != SerialFramingState::synchronized ||
+        diagnostic_recovery_pending_)
+      {
+        error = "connectAndValidate: startup stop reply ownership is unresolved";
+        return false;
+      }
     }
   } catch (const std::exception & ex) {
     error = "connectAndValidate: phase=connection category=transport_exception reason=" +
@@ -589,11 +676,133 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
   return true;
 }
 
-bool SerialIoWorker::sendStop(const char *, std::string & error)
+bool SerialIoWorker::sendOwnedCommands(
+  const std::vector<std::string> & commands, std::string & error,
+  std::chrono::steady_clock::time_point * write_accepted_at,
+  bool * write_fully_accepted)
 {
-  return transport_->sendCommands(
-    {"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"},
-    error);
+  const auto result = transport_->commandTransaction(commands, config_.command_transaction_bounds);
+  last_command_transaction_owned_ = result.status == CommandTransportStatus::success;
+  if (write_accepted_at != nullptr) {
+    *write_accepted_at = result.write_accepted_at;
+  }
+  if (write_fully_accepted != nullptr) {
+    *write_fully_accepted = result.write_fully_accepted;
+  }
+  if (result.status == CommandTransportStatus::success) {
+    return true;
+  }
+  error = result.reason;
+  if (result.status == CommandTransportStatus::failure) {
+    return false;
+  }
+
+  // Ownership is unknown. Block all normal work and use the existing single bounded
+  // drain/synchronization attempt before permitting another transaction.
+  scheduleOwnershipRecovery(result.started_at);
+  static const std::vector<std::string> exact_stop{
+    "!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"};
+  if (commands != exact_stop) {
+    (void)requestStop();
+  }
+  return result.write_fully_accepted;
+}
+
+void SerialIoWorker::scheduleOwnershipRecovery(
+  std::chrono::steady_clock::time_point started_at)
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  framing_state_ = SerialFramingState::unresolved;
+  DiagnosticTransaction ownership_probe{"?FF\r", "FF=", config_.diagnostic_query_timeout};
+  ownership_probe.correlation_id = ++next_validation_correlation_;
+  ownership_probe.connection_generation = connection_generation_;
+  ownership_probe.observer = [this](const DiagnosticPhaseEvent & event) {
+      observeDiagnosticPhase(event);
+    };
+  timed_out_diagnostic_ = ownership_probe;
+  timed_out_diagnostic_started_at_ = started_at;
+  diagnostic_recovery_pending_ = true;
+  last_recovery_correlation_ = ownership_probe.correlation_id;
+  desired_command_.valid = false;
+  minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
+  status_update_sequence_++;
+}
+
+bool SerialIoWorker::sendStop(
+  const char *, std::string & error,
+  std::chrono::steady_clock::time_point * write_accepted_at,
+  bool * write_fully_accepted)
+{
+  return sendOwnedCommands(
+    {"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"}, error, write_accepted_at,
+    write_fully_accepted);
+}
+
+bool SerialIoWorker::executePendingRuntimeStop(std::string & error)
+{
+  uint64_t correlation = 0;
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!runtime_stop_pending_) {
+      return true;
+    }
+    correlation = runtime_stop_correlation_;
+    generation = connection_generation_;
+  }
+
+  observeStopRequest(
+    StopRequestEvent{
+      StopRequestPhase::write_started, std::chrono::steady_clock::now(), correlation,
+      generation, 0});
+  std::chrono::steady_clock::time_point write_accepted_at;
+  bool write_fully_accepted = false;
+  const bool transaction_continues = sendStop(
+    "continuing-runtime request", error, &write_accepted_at, &write_fully_accepted);
+  observeStopRequest(
+    StopRequestEvent{
+      write_fully_accepted ? StopRequestPhase::write_accepted : StopRequestPhase::write_failed,
+      write_fully_accepted && write_accepted_at != std::chrono::steady_clock::time_point{} ?
+      write_accepted_at : std::chrono::steady_clock::now(), correlation, generation,
+      write_fully_accepted ? std::size_t{28} : std::size_t{0}});
+  if (!transaction_continues) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (runtime_stop_pending_ && runtime_stop_correlation_ == correlation) {
+    runtime_stop_pending_ = false;
+  }
+  desired_command_.valid = false;
+  minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
+  applied_sequence_ = latest_submitted_sequence_;
+  applied_stopped_ = true;
+  status_update_sequence_++;
+  return true;
+}
+
+void SerialIoWorker::observeStopRequest(const StopRequestEvent & event) const noexcept
+{
+  if (!config_.stop_request_observer) {
+    return;
+  }
+  try {
+    config_.stop_request_observer(event);
+  } catch (...) {
+    // Validation observability must never alter stop behavior.
+  }
+}
+
+void SerialIoWorker::observeDiagnosticPhase(const DiagnosticPhaseEvent & event) const noexcept
+{
+  if (!config_.diagnostic_phase_observer) {
+    return;
+  }
+  try {
+    config_.diagnostic_phase_observer(event);
+  } catch (...) {
+    // Validation observability must never alter diagnostic behavior.
+  }
 }
 
 void SerialIoWorker::observeTimeoutStop(const TimeoutStopEvent & event) const noexcept
@@ -610,7 +819,7 @@ void SerialIoWorker::observeTimeoutStop(const TimeoutStopEvent & event) const no
 
 bool SerialIoWorker::sendDesiredCommand(const DesiredMotorCommand & command, std::string & error)
 {
-  return transport_->sendCommands(
+  return sendOwnedCommands(
     buildMotorCommands(command.channel_1_mps, command.channel_2_mps),
     error);
 }
@@ -618,6 +827,10 @@ bool SerialIoWorker::sendDesiredCommand(const DesiredMotorCommand & command, std
 bool SerialIoWorker::validateControllerConfiguration(std::string & error)
 {
   for (const auto & setting : config_.required_settings) {
+    if (!executePendingRuntimeStop(error)) {
+      error = "pending continuing-runtime stop failed: " + error;
+      return false;
+    }
     const std::string query = query_for_setting(setting);
     const std::string expected_prefix = setting.name + "=";
     const std::string expected_value = std::to_string(setting.expected_value);
@@ -660,6 +873,10 @@ bool SerialIoWorker::validateControllerConfiguration(std::string & error)
 
 bool SerialIoWorker::validateCommunication(std::string & error)
 {
+  if (!executePendingRuntimeStop(error)) {
+    error = "pending continuing-runtime stop failed: " + error;
+    return false;
+  }
   const std::string query = "?FID\r";
   const std::string expected_prefix = "FID=";
   const std::string expected_value = "non-empty firmware identifier";
@@ -693,8 +910,10 @@ bool SerialIoWorker::validateCommunication(std::string & error)
 bool SerialIoWorker::pollEncoder(std::string & error)
 {
   std::string response;
+  const auto started_at = std::chrono::steady_clock::now();
   if (!transport_->query("?CR\r", "CR=", response, error)) {
-    return false;
+    scheduleOwnershipRecovery(started_at);
+    return true;
   }
 
   const auto parsed = protocol::parse_encoder_counts(response);
@@ -717,7 +936,24 @@ bool SerialIoWorker::pollEncoder(std::string & error)
 
 bool SerialIoWorker::executeDiagnosticQuery(DiagnosticQueryKind query)
 {
-  const auto transaction = diagnostic_transaction(query, config_.diagnostic_query_timeout);
+  auto transaction = diagnostic_transaction(query, config_.diagnostic_query_timeout);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    transaction.correlation_id = ++next_validation_correlation_;
+    transaction.connection_generation = connection_generation_;
+  }
+  transaction.observer = [this](const DiagnosticPhaseEvent & event) {
+      observeDiagnosticPhase(event);
+    };
+  observeDiagnosticPhase(
+    DiagnosticPhaseEvent{
+      DiagnosticPhase::selected, std::chrono::steady_clock::now(),
+      transaction.correlation_id, transaction.connection_generation, transaction.command, 0});
+  std::string priority_stop_error;
+  if (!executePendingRuntimeStop(priority_stop_error)) {
+    markFailure("stop before diagnostic selection failed: " + priority_stop_error);
+    return false;
+  }
   DiagnosticTransactionResult result;
   try {
     result = transport_->diagnosticQuery(transaction);
@@ -727,6 +963,8 @@ bool SerialIoWorker::executeDiagnosticQuery(DiagnosticQueryKind query)
     result.reason = std::string("diagnostic transport exception: ") + ex.what();
   }
   const auto timestamp = std::chrono::steady_clock::now();
+  SerialFramingState diagnostic_framing_state = SerialFramingState::synchronized;
+  uint64_t diagnostic_generation = transaction.connection_generation;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     latest_diagnostic_telemetry_ = DiagnosticTelemetry{
@@ -736,42 +974,91 @@ bool SerialIoWorker::executeDiagnosticQuery(DiagnosticQueryKind query)
       timestamp,
       std::chrono::milliseconds(0),
       connection_generation_,
+      transaction.correlation_id,
+      result.started_at,
+      result.write_accepted_at,
+      result.first_byte_at,
+      result.last_byte_at,
+      result.timeout_at,
+      result.delimiter_observed,
       result.status == DiagnosticTransportStatus::success ? "" : result.reason};
     status_update_sequence_++;
-    if (result.status == DiagnosticTransportStatus::timeout) {
+    if (result.status != DiagnosticTransportStatus::success) {
       framing_state_ = SerialFramingState::unresolved;
       timed_out_diagnostic_ = transaction;
       timed_out_diagnostic_started_at_ = result.started_at;
       diagnostic_recovery_pending_ = true;
+      last_recovery_correlation_ = transaction.correlation_id;
       status_update_sequence_++;
     }
+    diagnostic_framing_state = framing_state_;
+    diagnostic_generation = connection_generation_;
   }
-  if (result.status == DiagnosticTransportStatus::failure) {
-    markFailure("diagnostic transaction failed: " + result.reason);
-    return false;
+  if (config_.diagnostic_result_observer) {
+    try {
+      config_.diagnostic_result_observer(
+        DiagnosticResultEvent{
+          query,
+          result.status,
+          diagnostic_framing_state,
+          result.response,
+          result.raw_bytes,
+          result.reason,
+          result.delimiter_observed,
+          result.started_at,
+          result.write_accepted_at,
+          result.first_byte_at,
+          result.last_byte_at,
+          result.timeout_at,
+          result.completed_at,
+          diagnostic_generation,
+          transaction.correlation_id});
+    } catch (...) {
+      // Validation observability must never alter transport behavior.
+    }
   }
   return true;
 }
 
-bool SerialIoWorker::performDiagnosticRecovery(std::string & error)
+SerialIoWorker::DiagnosticRecoveryAttempt SerialIoWorker::performDiagnosticRecovery(
+  std::string & error)
 {
   DiagnosticTransaction timed_out;
   std::chrono::steady_clock::time_point started_at;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!diagnostic_recovery_pending_ || !timed_out_diagnostic_.has_value()) {
+      diagnostic_recovery_start_reserved_ = false;
       error = "diagnostic recovery state is incomplete";
-      return false;
+      return DiagnosticRecoveryAttempt::failed;
     }
+    if (runtime_stop_pending_ || !diagnostic_recovery_start_reserved_) {
+      diagnostic_recovery_start_reserved_ = false;
+      return DiagnosticRecoveryAttempt::deferred;
+    }
+    diagnostic_recovery_start_reserved_ = false;
     timed_out = *timed_out_diagnostic_;
     started_at = timed_out_diagnostic_started_at_;
   }
   const auto sync = synchronization_transaction(
     timed_out, config_.diagnostic_recovery_bounds.synchronization_timeout);
+  auto correlated_sync = sync;
+  correlated_sync.correlation_id = timed_out.correlation_id;
+  correlated_sync.connection_generation = timed_out.connection_generation;
+  correlated_sync.observer = timed_out.observer;
   DiagnosticRecoveryResult recovered;
   try {
     recovered = transport_->boundedDiagnosticRecovery(
-      timed_out, started_at, sync, config_.diagnostic_recovery_bounds);
+      timed_out, started_at, correlated_sync, config_.diagnostic_recovery_bounds,
+      [this](std::string & checkpoint_error) {
+        if (!executePendingRuntimeStop(checkpoint_error)) {
+          if (checkpoint_error.empty()) {
+            checkpoint_error = "pending stop failed before synchronization";
+          }
+          return false;
+        }
+        return true;
+      });
   } catch (const std::exception & ex) {
     recovered.reason = std::string("diagnostic recovery transport exception: ") + ex.what();
   }
@@ -779,23 +1066,40 @@ bool SerialIoWorker::performDiagnosticRecovery(std::string & error)
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (latest_diagnostic_telemetry_.has_value()) {
       latest_diagnostic_telemetry_->raw_value += recovered.drained_raw_bytes;
+      if (recovered.drain_last_byte_at != std::chrono::steady_clock::time_point{}) {
+        latest_diagnostic_telemetry_->last_byte_at = recovered.drain_last_byte_at;
+      }
+      if (recovered.synchronization_last_byte_at != std::chrono::steady_clock::time_point{}) {
+        latest_diagnostic_telemetry_->last_byte_at = recovered.synchronization_last_byte_at;
+      }
+      latest_diagnostic_telemetry_->delimiter_observed =
+        latest_diagnostic_telemetry_->delimiter_observed ||
+        recovered.drain_delimiter_observed ||
+        recovered.synchronization_delimiter_observed;
       if (!recovered.synchronized && !recovered.reason.empty()) {
         latest_diagnostic_telemetry_->failure_reason +=
           "; bounded recovery failed: " + recovered.reason;
       }
     }
     diagnostic_recovery_pending_ = false;
+    diagnostic_recovery_start_reserved_ = false;
     timed_out_diagnostic_.reset();
     if (recovered.synchronized) {
       framing_state_ = SerialFramingState::synchronized;
+      last_recovery_correlation_ = 0;
     }
     status_update_sequence_++;
   }
   if (!recovered.synchronized) {
+    observeDiagnosticPhase(
+      DiagnosticPhaseEvent{
+        DiagnosticPhase::before_fallback_close, std::chrono::steady_clock::now(),
+        timed_out.correlation_id, timed_out.connection_generation, timed_out.command,
+        recovered.drained_raw_bytes.size()});
     error = "bounded diagnostic recovery failed: " + recovered.reason;
-    return false;
+    return DiagnosticRecoveryAttempt::failed;
   }
-  return true;
+  return DiagnosticRecoveryAttempt::completed;
 }
 
 void SerialIoWorker::invalidateDiagnosticTelemetry(const std::string & reason)
@@ -813,10 +1117,17 @@ void SerialIoWorker::invalidateDiagnosticTelemetry(const std::string & reason)
 void SerialIoWorker::markFailure(const std::string & error)
 {
   SerialConnectionState previous_state;
+  bool issue_failure_stop = false;
   const char * previous_state_name = "unknown";
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     previous_state = state_;
+    issue_failure_stop =
+      transport_open_ &&
+      (state_ == SerialConnectionState::waiting_for_fresh_command ||
+      state_ == SerialConnectionState::ready) &&
+      framing_state_ == SerialFramingState::synchronized &&
+      !diagnostic_recovery_pending_;
   }
   switch (previous_state) {
     case SerialConnectionState::disconnected:
@@ -847,7 +1158,7 @@ void SerialIoWorker::markFailure(const std::string & error)
       previous_state_name << "->unhealthy; reconnect scheduled";
     config_.log_callback(stream.str());
   }
-  if (transport_->isOpen()) {
+  if (issue_failure_stop && transport_->isOpen()) {
     std::string ignored_error;
     sendStop("serial failure", ignored_error);
   }
@@ -861,6 +1172,7 @@ void SerialIoWorker::markFailure(const std::string & error)
     minimum_motion_sequence_ = latest_submitted_sequence_ + 1;
     framing_state_ = SerialFramingState::unresolved;
     diagnostic_recovery_pending_ = false;
+    diagnostic_recovery_start_reserved_ = false;
     timed_out_diagnostic_.reset();
     queued_diagnostic_query_.reset();
     invalidateDiagnosticTelemetry("connection failed; telemetry invalidated");

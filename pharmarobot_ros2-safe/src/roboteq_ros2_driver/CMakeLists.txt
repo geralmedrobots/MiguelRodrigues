@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.5)
 project(roboteq_ros2_driver)
 
+option(ROBOTEQ_BUILD_HARDWARE_VALIDATION
+  "Build fixed-mode Roboteq hardware validation harnesses" OFF)
+
 # ---------------------------------------------------------------------------
 # Build settings
 # ---------------------------------------------------------------------------
@@ -174,6 +177,29 @@ target_link_libraries(roboteq_serial_worker
   roboteq_serial_transport
 )
 
+if(ROBOTEQ_BUILD_HARDWARE_VALIDATION)
+  add_executable(roboteq_phase5b_stop_latency_validation
+    tools/phase5b/roboteq_phase5b_stop_latency_validation.cpp
+  )
+  target_link_libraries(roboteq_phase5b_stop_latency_validation
+    roboteq_serial_transport
+    roboteq_serial_worker
+  )
+  ament_target_dependencies(roboteq_phase5b_stop_latency_validation serial)
+  install(TARGETS roboteq_phase5b_stop_latency_validation
+    RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+  add_executable(roboteq_phase5b_ack_characterization
+    tools/phase5b/roboteq_phase5b_ack_characterization.cpp
+  )
+  target_include_directories(roboteq_phase5b_ack_characterization PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(roboteq_phase5b_ack_characterization serial)
+  install(TARGETS roboteq_phase5b_ack_characterization
+    RUNTIME DESTINATION lib/${PROJECT_NAME})
+endif()
+
 ament_target_dependencies(roboteq_serial_worker
   serial
 )
@@ -244,13 +270,10 @@ ament_target_dependencies(${PROJECT_NAME}_node
   tf2_geometry_msgs
 )
 
-# Link generated WheelTicks message interface
-rosidl_get_typesupport_target(cpp_typesupport_target
+# Link generated WheelTicks message interface (Foxy-compatible API)
+rosidl_target_interfaces(${PROJECT_NAME}_node
   ${PROJECT_NAME}
   "rosidl_typesupport_cpp"
-)
-target_link_libraries(${PROJECT_NAME}_node
-  ${cpp_typesupport_target}
 )
 
 target_include_directories(${PROJECT_NAME}_node PUBLIC
@@ -319,6 +342,22 @@ install(FILES
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+
+  if(ROBOTEQ_BUILD_HARDWARE_VALIDATION)
+    add_test(NAME test_phase5b_harness_rejects_nonfixed_port
+      COMMAND roboteq_phase5b_stop_latency_validation
+        --port /tmp/not-roboteq --baud 115200 --operator offline-test
+        --output /tmp/must-not-be-created.jsonl normal
+        --query FF --deadline-ms 100 --attempts 1 --phase-plan after-write)
+    set_tests_properties(test_phase5b_harness_rejects_nonfixed_port PROPERTIES WILL_FAIL TRUE)
+
+    add_test(NAME test_phase5b_ack_characterization_rejects_nonfixed_port
+      COMMAND roboteq_phase5b_ack_characterization
+        --port /tmp/not-roboteq --baud 115200 --output /tmp/must-not-be-created.jsonl
+        --mode h2 --attempts 1)
+    set_tests_properties(
+      test_phase5b_ack_characterization_rejects_nonfixed_port PROPERTIES WILL_FAIL TRUE)
+  endif()
 
   ament_add_gtest(test_roboteq_protocol
     test/test_roboteq_protocol.cpp
@@ -429,6 +468,26 @@ if(BUILD_TESTING)
   )
 
   ament_target_dependencies(test_serial_transport
+    serial
+  )
+
+  ament_add_gtest(test_phase5b_harness
+    test/test_phase5b_harness.cpp
+  )
+  target_include_directories(test_phase5b_harness PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(test_phase5b_harness
+    serial
+  )
+
+  ament_add_gtest(test_phase5b_ack_characterization
+    test/test_phase5b_ack_characterization.cpp
+  )
+  target_include_directories(test_phase5b_ack_characterization PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(test_phase5b_ack_characterization
     serial
   )
 
