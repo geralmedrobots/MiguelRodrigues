@@ -48,3 +48,31 @@ Phase 5A is entirely offline. Its serial-worker tests use a fake transport and
 do not open a device, start ROS production nodes, or send controller commands.
 The tests inject a bounded fake write delay and verify the exact four-command
 stop batch at startup, command timeout, transport failure, and shutdown.
+
+## Final Phase 5B stop and `?FF` evidence
+
+The final Phase 5B batch is recorded in
+`roboteq-final-phase5b-stop-ff-20260715T134630Z/00-final-phase5b-stop-ff.jsonl`
+with SHA-256
+`d3c6750ca92b37bc540a16fff05ebf5f8fa9d54e09d924c099481b1a7a19223a`.
+
+This run records the completed production-observability scope for Option E
+after the startup drain and query-helper fixes:
+
+- 30/30 attempts passed.
+- Startup drain clean.
+- Startup stop owned exactly four `+\r` ACKs.
+- Startup `?FID` validation succeeded.
+- The worker reached `waiting_for_fresh_command`.
+- All measured stops owned exactly four `+\r` ACKs.
+- All post-stop `?FF` diagnostics returned `FF=0\r`.
+- Final framing synchronized.
+- Request-stop to write-accepted latency min/median/p95/max:
+  6.477/7.321/8.137/8.166 ms.
+
+Interpret those latency numbers narrowly. They measure only
+`requestStop()` through full serial-library or operating-system write
+acceptance of the 28-byte stop batch. They do not prove physical UART
+completion, controller execution, physical stopping, LiDAR/OSSD/STO chain
+behavior, or physical STO behavior. Phase 4 remains blocked pending the real
+external safety chain.
