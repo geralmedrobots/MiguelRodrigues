@@ -1,0 +1,1 @@
+bash: line 1: lsusb: command not found

@@ -1,0 +1,2 @@
+origin	git@github-miguel-medrobots:geralmedrobots/MiguelRodrigues.git (fetch)
+origin	git@github-miguel-medrobots:geralmedrobots/MiguelRodrigues.git (push)

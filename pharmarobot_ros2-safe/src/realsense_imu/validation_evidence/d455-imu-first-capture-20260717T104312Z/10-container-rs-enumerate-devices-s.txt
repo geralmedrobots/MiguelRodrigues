@@ -1,0 +1,1 @@
+bash: line 1: rs-enumerate-devices: command not found

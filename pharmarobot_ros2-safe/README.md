@@ -234,6 +234,16 @@ as `!G` and `!S`; queries require bounded validated responses and reject
 malformed, rejected, truncated, oversized, stale, wrong-prefix, or timed-out
 responses.
 
+Phase 5B hardware validation is complete for the production stop/write-accept
+path. The validated Option E sequence is: startup drain, exact four-command
+zero stop batch, ownership of exactly four `+\r` acknowledgements, post-ACK
+quiet verification, startup `?FID\r` validation, transition to
+`waiting_for_fresh_command`, measured runtime stop, and post-stop `?FF\r`
+diagnostic verification. The final 30-attempt evidence batch is
+`src/roboteq_ros2_driver/validation_evidence/roboteq-final-phase5b-stop-ff-20260715T134630Z/00-final-phase5b-stop-ff.jsonl`
+with SHA-256
+`d3c6750ca92b37bc540a16fff05ebf5f8fa9d54e09d924c099481b1a7a19223a`.
+
 ## Stop, timeout, and reconnect behavior
 
 The driver has two related timeout paths:
@@ -262,6 +272,11 @@ With `require_fresh_command_after_reconnect: true`, motion commands submitted
 before or during a disconnect are invalidated. After reconnect and validation,
 the worker enters `waiting_for_fresh_command`; non-zero motion requires a fresh
 post-reconnect `/cmd_vel/safe` message.
+
+Phase 5B stop latency is measured only from `SerialIoWorker::requestStop()` to
+serial-library/OS write acceptance of the complete 28-byte zero batch. It is
+not physical motor stop time and does not prove UART completion, controller
+execution, STO actuation, or wheel standstill.
 
 ## Odometry and TF
 
@@ -437,11 +452,10 @@ started.
 
 ## Hardware validation checklist
 
-The repository contains automated tests and prior software validation evidence,
-but it does not contain a completed hardware validation record for the current
-serial-worker, watchdog, reconnect, odometry, covariance, and diagnostics
-implementation. Do not claim hardware behavior until these checks have been
-run and recorded.
+The repository contains automated tests and staged hardware evidence. Phase 5B
+now has a completed production serial-stop validation record, but that result
+is narrower than full robot safety validation. Do not claim physical stop or
+system-level safety behavior from Phase 5B alone.
 
 Run hardware validation only with explicit hardware approval, wheels lifted and
 secured where appropriate, the area clear, and the physical emergency stop/STO
@@ -523,8 +537,10 @@ they are not copied into the Docker image and are not started by any service.
 
 ## Known limitations and unfinished work
 
-- No in-repository hardware validation record was found for the current
-  serial-worker, reconnect, diagnostics, TF, covariance, and watchdog behavior.
+- Phase 5B is complete for the production serial stop/write-acceptance path,
+  but it does not establish physical STO behavior or wheel stop time.
+- Phase 4 remains blocked until the real LiDAR/OSSD/STO safety chain is
+  completed and separately validated on hardware.
 - Controller fault and STO state are published as diagnostics but are not
   polled from Roboteq registers and do not gate motion.
 - ROS graph authentication/authorization is not implemented; SROS2 and network
