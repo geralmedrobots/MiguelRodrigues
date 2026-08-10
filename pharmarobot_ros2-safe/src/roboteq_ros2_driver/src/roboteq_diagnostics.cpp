@@ -241,6 +241,33 @@ std::string commandReason(int level, const DiagnosticsState & state)
          "command age approaching timeout";
 }
 
+diagnostic_msgs::msg::DiagnosticStatus motorTelemetryStatus(
+  const MotorTelemetryChannel & channel,
+  bool snapshot_valid,
+  const std::string & snapshot_reason)
+{
+  const bool valid = snapshot_valid && channel.valid;
+  auto status = makeStatus(
+    "roboteq/channel_" + std::to_string(channel.channel) + "_telemetry",
+    valid ? DiagnosticStatus::OK : DiagnosticStatus::ERROR,
+    valid ? "fresh" : "invalid",
+    valid ? "bounded controller telemetry sample" :
+    (snapshot_reason.empty() ? channel.failure_reason : snapshot_reason),
+    valid ? std::to_string(channel.age.count()) + "ms" : "unknown");
+  appendValue(status, "sample_time_steady_ns", std::to_string(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        channel.timestamp.time_since_epoch()).count()));
+  appendValue(status, "CIS_raw", std::to_string(channel.command_source));
+  appendValue(status, "M_raw", std::to_string(channel.applied_command));
+  appendValue(status, "S_raw", std::to_string(channel.measured_speed));
+  appendValue(status, "A_raw", std::to_string(channel.current));
+  appendValue(status, "P_raw", std::to_string(channel.power));
+  appendValue(status, "FM_raw", std::to_string(channel.motor_fault));
+  appendValue(status, "FF_raw", std::to_string(channel.fault_flags));
+  appendValue(status, "units", "controller_raw_units; see package documentation");
+  return status;
+}
+
 }  // namespace
 
 bool DiagnosticsPublisherState::shouldPublish(const diagnostic_msgs::msg::DiagnosticArray & msg)
@@ -273,7 +300,7 @@ diagnostic_msgs::msg::DiagnosticArray buildDiagnosticsArray(
 {
   diagnostic_msgs::msg::DiagnosticArray array;
   array.header.stamp = stamp;
-  array.status.reserve(5);
+  array.status.reserve(7);
 
   const auto serial_level = serialLevel(state);
   auto serial_status = makeStatus(
@@ -334,6 +361,24 @@ diagnostic_msgs::msg::DiagnosticArray buildDiagnosticsArray(
   array.status.push_back(
     makeControllerSafetyStatus(
       "roboteq/controller_sto", state.sto_status));
+
+  if (state.motor_telemetry_enabled) {
+    if (state.motor_telemetry.has_value()) {
+      array.status.push_back(motorTelemetryStatus(
+          state.motor_telemetry->channel_1,
+          state.motor_telemetry->valid,
+          state.motor_telemetry->failure_reason));
+      array.status.push_back(motorTelemetryStatus(
+          state.motor_telemetry->channel_2,
+          state.motor_telemetry->valid,
+          state.motor_telemetry->failure_reason));
+    } else {
+      MotorTelemetryChannel channel_1{1};
+      MotorTelemetryChannel channel_2{2};
+      array.status.push_back(motorTelemetryStatus(channel_1, false, "no telemetry sample yet"));
+      array.status.push_back(motorTelemetryStatus(channel_2, false, "no telemetry sample yet"));
+    }
+  }
 
   return array;
 }

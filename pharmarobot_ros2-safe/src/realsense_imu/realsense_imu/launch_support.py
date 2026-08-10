@@ -20,6 +20,15 @@ from typing import Callable, Dict
 from ament_index_python.packages import get_package_share_directory
 
 
+DEFAULT_SERIAL_NUMBER = "146222250608"
+UPSTREAM_IMU_TOPIC = "/realsense/d455/imu"
+DEFAULT_RAW_TOPIC = "/imu/d455/data_raw"
+# The official wrapper's combined gyro/accelerometer topic uses this frame.
+# Keep the raw interface faithful to that live upstream contract; the processor
+# applies its explicit rotation only when publishing /imu/data.
+DEFAULT_EXPECTED_FRAME_ID = "d455_imu_optical_frame"
+
+
 def normalize_serial_number(serial_number: str) -> str:
     """Apply the RealSense wrapper's prefix for digit-only serial strings."""
     normalized = serial_number.strip().lstrip("_")

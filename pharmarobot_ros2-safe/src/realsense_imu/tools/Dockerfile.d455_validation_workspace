@@ -1,0 +1,44 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE_DIGEST
+ARG SOURCE_MANIFEST_SHA256
+
+LABEL pharmarobot.d455.validation-workspace="true" \
+      pharmarobot.d455.base-image-digest="${BASE_IMAGE_DIGEST}" \
+      pharmarobot.d455.source-manifest-sha256="${SOURCE_MANIFEST_SHA256}"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY . /validation_ws
+
+RUN set -eu; \
+    test -f /validation_ws/snapshot-manifest.json; \
+    set +u; \
+    source /opt/ros/humble/setup.bash; \
+    set -u; \
+    colcon --log-base /validation_ws/log build \
+      --base-paths /validation_ws/src \
+      --packages-select realsense_imu \
+      --build-base /validation_ws/build \
+      --install-base /validation_ws/install \
+      --event-handlers console_direct+; \
+    set +u; \
+    source /validation_ws/install/setup.bash; \
+    set -u; \
+    colcon --log-base /validation_ws/test-log test \
+      --base-paths /validation_ws/src \
+      --packages-select realsense_imu \
+      --build-base /validation_ws/build \
+      --install-base /validation_ws/install \
+      --event-handlers console_direct+; \
+    mkdir -p /validation_ws/build-evidence; \
+    colcon test-result \
+      --test-result-base /validation_ws/build \
+      --verbose \
+      | tee /validation_ws/build-evidence/test-result.txt; \
+    test -f /validation_ws/install/setup.bash; \
+    cp /validation_ws/snapshot-manifest.json \
+      /validation_ws/build-evidence/snapshot-manifest.json; \
+    printf 'D455_VALIDATION_WORKSPACE_BUILD=passed\n' \
+      > /validation_ws/build-evidence/result.txt

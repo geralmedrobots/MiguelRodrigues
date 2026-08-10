@@ -1,4 +1,357 @@
-# Roboteq `?CR` hardware-validation tool
+# Roboteq validation tools
+
+## D455/Roboteq rotation validation harness
+
+> **Frozen for new motion testing.** Existing validation evidence and the
+> harness are preserved for audit and checked cleanup. This harness is no
+> longer the recommended path for new velocity or rotation tests. Its CLI
+> rejects the nonzero `motion` stage before state creation or any Docker/ROS
+> command. Nonzero motion through this harness must not be requested unless a
+> later, explicit approval authorizes a separately reviewed code change to
+> re-enable it. Read-only `status` and checked zero/cleanup workflows such as
+> `abort` remain available under the repository's normal runtime approval
+> rules.
+
+`d455_rotation_validation.py` replaces the ad-hoc nested-heredoc rotation
+procedure. It is a host-side, fail-closed orchestrator with one checked stage
+per invocation. The tool does not import ROS or open a device itself, but its
+`prepare`, `motion`, `finalize`, and `abort` stages execute Docker and ROS
+commands. Those stages remain operator-gated hardware actions: Codex must print
+the reviewed invocation for the operator to run manually. The historical
+nonzero `motion` documentation below describes preserved evidence semantics;
+the current CLI guard blocks it.
+
+The harness stores its authoritative state on the host in a new per-trial
+evidence directory:
+
+- `rotation-harness-state.json` records the trial status, pinned container IDs,
+  and recorder identities;
+- `rotation-harness-events.jsonl` is the append-only stage/event history;
+- `.rotation-harness.lock` prevents concurrent stage invocations;
+- numbered `*-publisher-evidence.json` and `*-publisher.log` artifacts record
+  every prepare-zero, motion, and cleanup-zero child run, including its exit
+  status, requested/actual count, monotonic timing, discovered endpoints,
+  per-field endpoint QoS acceptance, and the pinned recorder-QoS override;
+- `robot-recorder.log`, `imu-recorder.log`, and the matching
+  `*-recorder-cleanup.json` artifacts preserve each recorder's final log,
+  child exit status, pinned wrapper identity, and strict reap proof before a
+  cleanup stage can report success;
+- `*-recorder-launch-cleanup.json` preserves strict recovery proof for a
+  recorder launch that failed or was interrupted before its full identity
+  could be committed;
+- finalized `robot-bag/` and `imu-bag/` directories are copied to the host only
+  after all final checks pass.
+
+Recorder identity is not an unchecked PID file. For each container the state
+records the Docker container ID plus the recorder PID, process-group ID,
+session ID, `/proc` start time, and command-line bytes. Every later operation
+revalidates that identity before signalling the complete owned process group.
+Each recorder wrapper is the foreground process of a detached Docker exec,
+rather than a background child of a short-lived in-container shell. The
+wrapper starts rosbag, waits for that child, atomically writes its exit status,
+and exits under the Docker exec parent that owns reaping. Startup waits for the
+bag database, validates and durably records the identity, then acknowledges
+the recorder wrapper. Before the detached launch, the state durably registers
+the attempt token and its receipt, exit, bag, and log paths. The wrapper writes
+an atomic PID/PGID/SID/start-time/command-line receipt before it may start
+`ros2 bag record`. A failed, timed-out, or interrupted launch/identity scan is
+therefore never classified as `never_started`: cleanup must either prove a
+receipt-free, token-free quiescent attempt or use the receipt to prove the
+pinned wrapper and its complete process group were reaped. That recovery proof
+is hash-pinned in the state. Stop is bounded: `SIGINT`, then `SIGTERM`, then
+`SIGKILL` if necessary. Cleanup succeeds only when the complete pinned process
+group is empty and `/proc/<wrapper-pid>` is absent. A live member, any zombie
+member, a PID-1-owned zombie, an unknown state, identity drift, or incomplete
+identity fails closed. Before signalling a live leader, the harness pins and
+revalidates its container ID, PID, process-group ID, session ID, `/proc` start
+time, and nonempty exact command line. Startup-token cleanup applies the same
+strictly-empty rule.
+
+ROS setup files are sourced with shell nounset disabled. The generated shell
+enables `set -u` only after all requested setup files have completed, avoiding
+the Humble `AMENT_TRACE_SETUP_FILES: unbound variable` failure while retaining
+strict handling for the command body.
+
+### Staged flow
+
+Use a fresh evidence directory and fresh, non-existing bag/log paths for each
+trial. The forms below document the CLI; they do not authorize Docker, hardware
+access, or motion, and placeholders must be replaced with the reviewed current
+container identities and paths.
+
+1. `prepare` pins both containers and starts the robot and IMU recorders. It
+   records `/cmd_vel/joy`, `/cmd_vel/test`, `/cmd_vel/nav`, `/cmd_vel/safe`,
+   `/wheel_ticks`, `/odom`, `/diagnostics`, `/tf`, and `/tf_static` in the robot
+   bag, and `/camera/imu` in the IMU bag.
+
+   The robot recorder is started first with
+   `config/d455_rotation_rosbag_qos.yaml` forced through
+   `--qos-profile-overrides-path`. The package-local
+   `d455_twist_publisher.py` then publishes exactly 20 exact-zero `Twist`
+   messages over 1 second at 20 Hz. It uses the same explicit QoS contract as
+   every later publisher and does not begin until both
+   `/:command_arbiter` and `/:rosbag2_recorder` are visible with compatible,
+   unambiguous QoS evidence. Reliability and durability must be reported and
+   match exactly. History and depth must either match exactly or be reported
+   by the middleware as the known unreported sentinels `unknown` and `0`;
+   those sentinels are accepted only with an explicitly recorded
+   `tolerated_unreported` result, while the recorder override file is pinned
+   by path and SHA-256 before the child starts. A launch gate holds the
+   publisher until its container ID, PID, PGID, SID, `/proc` start time, exact
+   command line, helper path, and helper SHA-256 are pinned. The child writes
+   its expected PID/PGID breadcrumb as its first shell action, while the parent
+   independently writes the same spawned PID/expected-PGID breadcrumb. The
+   child then writes an atomic full identity receipt before waiting on the
+   gate; the parent writes `GATE_RELEASE_AUTHORIZED` before it can create the
+   gate. A missing gate is terminal and cannot fall through to the protected
+   publisher command. The launch shell waits for and reaps the short-lived
+   wrapper instead of
+   orphaning it to container PID 1. After that wait, the harness requires the
+   wrapper wait status and atomic exit artifact to agree at zero, rejects any
+   remaining process-group member including a zombie, persists stdout/stderr
+   and JSON timing evidence, and requires the active robot bag to contain
+   exactly those 20 `/cmd_vel/test` messages. It does not require a completed
+   publisher to retain a live `/proc/<pid>/cmdline`. Only then is the IMU
+   recorder started.
+   Missing or mismatched QoS, count, timing, topic delivery, identity, exit, or
+   reaping evidence invalidates prepare. Finally, prepare verifies at least 10
+   exact-zero `/cmd_vel/safe` samples before entering the `prepared` state.
+   This discovery step cannot construct or publish a nonzero command.
+
+   The single `/cmd_vel/test` publisher/recorder QoS contract is:
+
+   ```yaml
+   history: keep_last
+   depth: 1
+   reliability: reliable
+   durability: volatile
+   ```
+
+   ```bash
+   python3 src/roboteq_ros2_driver/tools/d455_rotation_validation.py \
+     --evidence-dir TRIAL_EVIDENCE_DIR prepare \
+     --trial-id TRIAL_ID \
+     --robot-container ROBOT_CONTAINER \
+     --imu-container IMU_CONTAINER \
+     --robot-bag ROBOT_BAG_PATH --imu-bag IMU_BAG_PATH \
+     --robot-log ROBOT_LOG_PATH --imu-log IMU_LOG_PATH \
+     --imu-setup D455_ISOLATED_INSTALL_SETUP
+   ```
+
+   `/opt/ros/humble/setup.bash` is included by default for both containers.
+   Repeat `--robot-setup` or `--imu-setup` only for additional overlays.
+
+   Before the first motion attempt with this recorder-discovery sequence, a
+   fresh operator-gated zero-motion runtime smoke is required because offline
+   tests cannot prove live ROS graph discovery. In a dedicated evidence
+   directory run only `prepare`, `status`, then `abort`; do not run `motion`.
+   Require successful preparation, exact-zero verification, clean recorder
+   shutdown, and no remaining recorder process or zombie. Preserve that smoke evidence
+   and use another fresh evidence directory and fresh recorder identities for
+   any later motion trial; never reuse the aborted smoke state.
+
+2. Before `motion`, create a fresh kernel-audit artifact. It must be a regular,
+   non-symlink UTF-8 file, no more than 4096 bytes, containing exactly these two
+   lines and nothing else:
+
+   ```text
+   apparmor_denials=0
+   d455_usb_reset_or_disconnect=0
+   ```
+
+   It must postdate trial creation and be no more than 120 seconds old. The
+   harness stores its absolute path and SHA-256. Audit collection itself is an
+   operator-gated host action and must use the separately reviewed bounded
+   kernel-log procedure.
+
+3. After separate approval for this trial, run `motion`. The fixed allowlist is
+   `linear.x=0.0`, `angular.z` exactly one of `-0.675`, `-0.45`, `-0.30`,
+   `-0.15`, `0.15`, `0.30`, `0.45`, or `0.675` rad/s, 20 Hz, and duration 2
+   or 5 seconds. Both rotation directions are explicitly supported. The
+   literal acknowledgement is required:
+
+   ```bash
+   python3 src/roboteq_ros2_driver/tools/d455_rotation_validation.py \
+     --evidence-dir TRIAL_EVIDENCE_DIR motion \
+     --linear-x 0.0 --angular-z APPROVED_SIGN \
+     --duration APPROVED_DURATION --rate-hz 20 \
+     --acknowledge-motion robot-clear-estop-ready \
+     --kernel-audit-artifact FRESH_PRE_MOTION_AUDIT
+   ```
+
+   Before nonzero publication the harness verifies both owned recorders, live
+   IMU/wheel/odom messages, recorder subscriptions, exact Roboteq diagnostic
+   message text `ready` for serial and `fresh` for encoders within one coherent
+   capture window, and the fresh audit. A pair in the same `DiagnosticArray` is
+   accepted; a pair split across `DiagnosticArray` messages must be no more
+   than 2 seconds apart, using valid ROS header stamps when both exist and
+   callback monotonic receive times otherwise. A disconnected or resyncing
+   serial status, stale encoder status, or other non-OK required status is
+   sticky and fails the gate. Diagnostic level zero is accepted as integer zero
+   or a single zero byte. The subscriber explicitly requests best-effort,
+   volatile QoS so it can match either reliable or best-effort publishers;
+   discovery and message receipt have separate bounded 10-second and 8-second
+   windows. It also requires the live command arbiter to report the expected
+   `publish_rate_hz=20.0` and `test_timeout_s=0.25` parameters. It then
+   uses the same package-local publisher to send bounded exact zero, proves the
+   recorder is subscribed to `/cmd_vel/test`, and verifies at least 10
+   exact-zero `/cmd_vel/safe` samples. Nonzero publication cannot precede those
+   gates.
+
+   Prepare zero, nonzero motion, and every finalize/abort/failure cleanup zero
+   all use `d455_twist_publisher.py`; the harness contains no `ros2 topic pub`
+   publishing path and no inline `rclpy` publisher program. Each child runs in
+   a uniquely tagged, process-group-owned wrapper behind a start gate. Its
+   container ID, PID, PGID, SID, `/proc` start time, and exact command line are
+   persisted in a child-written receipt before the gate releases, and its
+   launch parent persists the gate phase and performs a bounded `wait` so the
+   wrapper is reaped rather than orphaned.
+   Prepare and motion wait up to 5 seconds for endpoint-specific discovery of
+   both `/:command_arbiter` and `/:rosbag2_recorder`; cleanup requires both
+   while the recorder is expected, but may require only the arbiter after an
+   invalid state has made the recorder unavailable. Every required endpoint
+   must report exact `reliable` reliability and `volatile` durability.
+   `keep_last` history and depth `1` are recorded as verified when available;
+   Humble/Fast DDS reports of history `unknown` and depth `0` are recorded as
+   tolerated unreported metadata rather than treated as mismatches. Other
+   history/depth values remain real mismatches. The recorder endpoint is not
+   accepted unless the rosbag override path and SHA-256 were verified before
+   publisher startup and reproduced in publisher evidence. The raw Fast DDS
+   matched-subscription count and all discovered endpoint QoS details are
+   retained as evidence. The raw aggregate count is telemetry only because it
+   may undercount; it never authorizes or blocks publication. Only one
+   unambiguous record for each required endpoint can make the publisher ready.
+   A missing, duplicated, conflicting, reliability-mismatched, or
+   durability-mismatched required endpoint fails before any publish.
+   It then schedules exactly `duration * rate` identical nonzero `Twist`
+   messages against monotonic deadlines. The publisher atomically refreshes its
+   evidence after every publish, including command type, requested/actual
+   count, raw monotonic/system timestamps, graph count, endpoint QoS detail,
+   UTC start/first/last/end times, interval min/mean/max, and maximum schedule
+   lateness. The harness adds the atomic child exit status and
+   stdout/stderr/JSON artifact paths before accepting that evidence. Completion
+   is accepted only when the launch-parent wait status matches that exit
+   artifact, the complete evidence matches the requested command type, values,
+   count, and timing, and a strict post-check proves the leader PID and every
+   process-group member absent. A zombie-only publisher group is a cleanup
+   failure; unlike recorder shutdown, it is never treated as sufficiently
+   quiescent. Prepare failure, motion cleanup, finalize, and abort recheck every
+   durably registered launch attempt before proceeding. Interruption stops an
+   exact live identity when its receipt exists. A missing identity is accepted
+   only when the durable phase remains `PRELAUNCH`, the gate is absent, at
+   least one safe child/parent PID-and-expected-PGID breadcrumb exists, all
+   available breadcrumbs agree, and the exact breadcrumb PID, expected process
+   group, and separate token-bearing processes are absent. A breadcrumb PID
+   that is still a zombie, a conflicting breadcrumb, or a missing breadcrumb
+   fails cleanup; a token scan with no match is never sufficient by itself.
+   The strict verifier excludes its own shell PID from the token scan but
+   rejects every separate token-bearing process.
+   Partial count/timing evidence is preserved when the gate was authorized.
+   The host treats `SIGHUP` and `SIGTERM` as cleanup-aware interruptions
+   (returning `128 + signal`) as well as handling `SIGINT`.
+   `motion-publisher-evidence.json` is accepted only
+   when its raw timestamps reproduce the summary, its count is exact, its
+   requested window and message span are within 0.10 seconds, every interval
+   is within 0.025 seconds of 20 Hz, and maximum deadline lateness is no more
+   than 0.05 seconds.
+
+   After every motion whose publisher is proven absent, including exceptions
+   and interruption, the harness publishes bounded exact zero and verifies at
+   least 10 exact-zero `/cmd_vel/safe` samples before inspecting delivery.
+   If an attempted nonzero publisher cannot be proven absent, starting another
+   publisher is blocked; the stage fails closed and the recorders are stopped
+   without launching cleanup zero. Failure to send or prove an allowed zero
+   also makes the stage fail. A standard-library SQLite/CDR check then persists
+   `motion-delivery-evidence.json` and requires exactly the intended nonzero
+   count and payload on `/cmd_vel/test`, with its first-to-last span within
+   0.10 seconds of `(count - 1) / rate` and no inter-arrival more than
+   0.025 seconds beyond the requested period. `/cmd_vel/safe` must contain only
+   the matching forwarded nonzero payload, no internal zero sample between its
+   first and last nonzero messages, no excessive inter-arrival, start within
+   0.10 seconds, and have count, end offset, and duration consistent with the
+   verified 20 Hz arbiter and 0.25-second test-source timeout. Incomplete,
+   discontinuous, or mistimed publication/delivery invalidates the trial and
+   cannot print `motion completed`.
+
+   Every prepare, motion, finalize, and abort cleanup persists the recorder log
+   and zero exit result, and refuses a successful status until both robot and
+   IMU wrapper leaders have been reaped and both owned process groups are
+   strictly empty. A `recorder_stop_failed` event is included in the terminal
+   error list; therefore `abort_completed.cleanup_errors` cannot be empty when
+   an owned recorder remains live, zombie, identity-drifted, or only partially
+   identified.
+
+   Partial prepare cleanup distinguishes a recorder for which no launch was
+   attempted, a durably registered but incomplete attempt, and a fully
+   identified started recorder. A genuine never-started recorder is neither
+   container-validated nor copied as partial evidence. A registered attempt
+   must have hash-pinned launch-cleanup evidence: receipt-free cleanup requires
+   a bounded quiet poll proving both receipt and token absent; a receipt-bearing
+   attempt requires exact receipt identity, strict group/PID absence, and its
+   child exit artifact. Receipt-bearing attempts may preserve only available
+   invalid partial artifacts. Started recorders retain the full identity checks
+   and fail cleanup on container replacement, incomplete identity, any
+   remaining live or zombie group member, a missing zero exit result, or an
+   unproven reap.
+
+4. Collect a distinct fresh post-motion audit in the same exact format, then
+   run `finalize`:
+
+   ```bash
+   python3 src/roboteq_ros2_driver/tools/d455_rotation_validation.py \
+     --evidence-dir TRIAL_EVIDENCE_DIR finalize \
+     --kernel-audit-artifact FRESH_POST_MOTION_AUDIT
+   ```
+
+   The post-motion audit must not be the pre-motion artifact and must postdate
+   motion completion. Finalization sends and verifies zero once more, stops both
+   owned recorder process groups, repeats the exact motion-delivery validation
+   against the closed robot bag in `final-motion-delivery-evidence.json`,
+   requires nonzero counts for `/cmd_vel/test`, `/cmd_vel/safe`,
+   `/wheel_ticks`, `/odom`, and `/camera/imu`, then copies both finalized bags
+   to the host. Only state `complete` is valid trial evidence.
+
+5. `status` is read-only and reports the durable host state. `abort` is the
+   checked cleanup path for any non-complete harness trial:
+
+   ```bash
+   python3 src/roboteq_ros2_driver/tools/d455_rotation_validation.py \
+     --evidence-dir TRIAL_EVIDENCE_DIR status
+
+   python3 src/roboteq_ros2_driver/tools/d455_rotation_validation.py \
+     --evidence-dir TRIAL_EVIDENCE_DIR abort
+   ```
+
+   For terminal `aborted` or `complete` state, read-only `status` first
+   validates both started recorders' pinned cleanup JSON, final log hashes,
+   zero exit status, and detached-exec reap ownership. For a recovered
+   incomplete launch it instead validates the hash-pinned
+   `*-recorder-launch-cleanup.json`. It fails instead of printing an unproved
+   terminal state.
+
+   `abort` is also operator-gated because it accesses Docker, ROS, Roboteq
+   command topics, and recorder processes. It sends and proves zero before
+   stopping owned recorders. A completed trial cannot be aborted.
+
+Any stage failure exits nonzero and cannot print `<stage> completed`. Motion or
+finalization failure marks the trial `invalid`, stops the owned recorders, and
+copies recoverable bags as `partial-robot-bag/` and `partial-imu-bag/` with
+`validity=invalid_partial` events. Partial bags are diagnostic evidence only;
+they must never be used for sign acceptance or rotation calibration. If cleanup
+or preservation also fails, those errors remain in state/events and require a
+separately approved operator cleanup. Never reuse an invalid trial directory,
+container identity, bag path, or recorder identity for a new trial.
+
+Run the hardware-free focused tests with:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 -m unittest -v \
+    src/roboteq_ros2_driver/tools/test_d455_twist_publisher.py \
+    src/roboteq_ros2_driver/tools/test_d455_rotation_validation.py
+```
+
+## Roboteq `?CR` hardware-validation tool
 
 `roboteq_cr_validation.py` is an isolated commissioning diagnostic. It does not
 start ROS, import the production driver, or write controller settings. Run it

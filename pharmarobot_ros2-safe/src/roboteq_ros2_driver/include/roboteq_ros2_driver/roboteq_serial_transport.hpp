@@ -245,6 +245,16 @@ public:
     const std::string & expected_prefix,
     std::string & response,
     std::string & error) = 0;
+  virtual bool queryWithTimeout(
+    const std::string & command,
+    const std::string & expected_prefix,
+    std::chrono::milliseconds timeout,
+    std::string & response,
+    std::string & error)
+  {
+    (void)timeout;
+    return query(command, expected_prefix, response, error);
+  }
   virtual DiagnosticTransactionResult diagnosticQuery(
     const DiagnosticTransaction & transaction) = 0;
   virtual DiagnosticRecoveryResult boundedDiagnosticRecovery(
@@ -270,6 +280,12 @@ public:
   bool query(
     const std::string & command,
     const std::string & expected_prefix,
+    std::string & response,
+    std::string & error) override;
+  bool queryWithTimeout(
+    const std::string & command,
+    const std::string & expected_prefix,
+    std::chrono::milliseconds timeout,
     std::string & response,
     std::string & error) override;
   DiagnosticTransactionResult diagnosticQuery(

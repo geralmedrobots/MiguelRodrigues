@@ -412,6 +412,17 @@ bool RoboteqSerialTransport::query(
   std::string & response,
   std::string & error)
 {
+  return queryWithTimeout(
+    command, expected_prefix, config_.transaction_timeout, response, error);
+}
+
+bool RoboteqSerialTransport::queryWithTimeout(
+  const std::string & command,
+  const std::string & expected_prefix,
+  std::chrono::milliseconds timeout,
+  std::string & response,
+  std::string & error)
+{
   QueryTraceEvent trace;
   trace.command = command;
   trace.expected_prefix = expected_prefix;
@@ -445,7 +456,8 @@ bool RoboteqSerialTransport::query(
     return finish(false);
   }
 
-  const auto deadline = std::chrono::steady_clock::now() + config_.transaction_timeout;
+  const auto bounded_timeout = std::max(std::chrono::milliseconds(1), timeout);
+  const auto deadline = std::chrono::steady_clock::now() + bounded_timeout;
   const std::string stripped_command = strip_roboteq_line_endings(command);
   std::size_t total_bytes = 0;
   std::string line;

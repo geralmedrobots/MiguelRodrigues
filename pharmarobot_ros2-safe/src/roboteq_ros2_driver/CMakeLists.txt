@@ -165,6 +165,15 @@ add_library(roboteq_serial_worker
   src/roboteq_serial_worker.cpp
 )
 
+add_library(roboteq_telemetry
+  src/roboteq_telemetry.cpp
+)
+
+target_include_directories(roboteq_telemetry PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 target_include_directories(roboteq_serial_worker PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -175,6 +184,7 @@ target_link_libraries(roboteq_serial_worker
   roboteq_configuration
   roboteq_protocol
   roboteq_serial_transport
+  roboteq_telemetry
 )
 
 if(ROBOTEQ_BUILD_HARDWARE_VALIDATION)
@@ -254,6 +264,7 @@ target_link_libraries(${PROJECT_NAME}_node
   roboteq_protocol
   roboteq_serial_transport
   roboteq_serial_worker
+  roboteq_telemetry
 )
 
 ament_target_dependencies(${PROJECT_NAME}_node
@@ -314,6 +325,7 @@ install(TARGETS
   roboteq_odom_twist
   roboteq_serial_transport
   roboteq_serial_worker
+  roboteq_telemetry
   differential_drive_kinematics
   ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
@@ -457,6 +469,13 @@ if(BUILD_TESTING)
 
   ament_target_dependencies(test_serial_worker
     serial
+  )
+
+  ament_add_gtest(test_roboteq_telemetry
+    test/test_roboteq_telemetry.cpp
+  )
+  target_link_libraries(test_roboteq_telemetry
+    roboteq_telemetry
   )
 
   ament_add_gtest(test_serial_transport

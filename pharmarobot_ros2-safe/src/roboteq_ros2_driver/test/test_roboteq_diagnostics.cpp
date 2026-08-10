@@ -160,6 +160,24 @@ TEST(DriverParameterValidation, RequiresEncoderFreshnessErrorGreaterThanWarn)
     validation::validate_encoder_freshness_thresholds(0.25, 1.0).has_value());
 }
 
+TEST(DriverParameterValidation, RejectsInvalidTelemetryTimingWhenEnabled)
+{
+  namespace validation = roboteq_ros2_driver::parameter_validation;
+  EXPECT_EQ(
+    validation::validate_telemetry_timing(true, 0, 5, 100, 50, 500)->parameter,
+    "telemetry_poll_period_ms");
+  EXPECT_EQ(
+    validation::validate_telemetry_timing(true, 20, 0, 100, 50, 500)->parameter,
+    "telemetry_query_timeout_ms");
+  EXPECT_EQ(
+    validation::validate_telemetry_timing(true, 100, 20, 50, 50, 500)->parameter,
+    "telemetry_stale_after_ms");
+  EXPECT_EQ(
+    validation::validate_telemetry_timing(true, 20, 60, 100, 50, 500)->parameter,
+    "telemetry_query_timeout_ms");
+  EXPECT_FALSE(validation::validate_telemetry_timing(false, 0, 0, 0, 0, 0).has_value());
+}
+
 TEST(RoboteqDiagnostics, PublishesFirstMessage)
 {
   driver::DiagnosticsPublisherState publisher_state;
@@ -175,6 +193,35 @@ TEST(RoboteqDiagnostics, PublishesFirstMessage)
   EXPECT_TRUE(decision.publish);
   EXPECT_TRUE(decision.state_changed);
   EXPECT_FALSE(decision.periodic);
+}
+
+TEST(RoboteqDiagnostics, PublishesPerChannelTelemetryAndRawUnits)
+{
+  auto state = baseState();
+  state.motor_telemetry_enabled = true;
+  driver::MotorTelemetrySnapshot snapshot;
+  snapshot.valid = true;
+  snapshot.channel_1.valid = true;
+  snapshot.channel_2.valid = true;
+  snapshot.channel_1.command_source = 1;
+  snapshot.channel_1.applied_command = -10;
+  snapshot.channel_1.measured_speed = -9;
+  snapshot.channel_1.current = 3;
+  snapshot.channel_1.power = 4;
+  snapshot.channel_1.motor_fault = 0;
+  snapshot.channel_1.fault_flags = 0;
+  snapshot.channel_2 = snapshot.channel_1;
+  snapshot.channel_2.channel = 2;
+  state.motor_telemetry = snapshot;
+
+  const auto msg = driver::buildDiagnosticsArray(
+    rclcpp::Time(3, 0, RCL_ROS_TIME), state, baseConfig());
+  const auto & channel_1 = statusByName(msg, "roboteq/channel_1_telemetry");
+  EXPECT_EQ(channel_1.level, DiagnosticStatus::OK);
+  EXPECT_EQ(valueByKey(channel_1, "CIS_raw"), "1");
+  EXPECT_EQ(valueByKey(channel_1, "M_raw"), "-10");
+  EXPECT_EQ(valueByKey(channel_1, "units"), "controller_raw_units; see package documentation");
+  EXPECT_EQ(statusByName(msg, "roboteq/channel_2_telemetry").level, DiagnosticStatus::OK);
 }
 
 TEST(RoboteqDiagnostics, SuppressesUnchangedStateBeforePeriodEvenWhenStampAndAgeChange)

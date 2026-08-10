@@ -1,0 +1,5 @@
+/cmd_vel/test:
+  history: keep_last
+  depth: 1
+  reliability: reliable
+  durability: volatile

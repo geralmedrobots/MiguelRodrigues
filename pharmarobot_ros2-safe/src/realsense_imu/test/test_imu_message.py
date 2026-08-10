@@ -28,6 +28,7 @@ def test_prepare_imu_message_preserves_timestamp_measurements_and_covariance():
     source = Imu()
     source.header.stamp.sec = 123
     source.header.stamp.nanosec = 456
+    source.header.frame_id = "d455_imu_optical_frame"
     source.angular_velocity.x = 1.25
     source.angular_velocity.y = -2.5
     source.angular_velocity.z = 3.75
@@ -37,10 +38,10 @@ def test_prepare_imu_message_preserves_timestamp_measurements_and_covariance():
     source.angular_velocity_covariance = [0.01] * 9
     source.linear_acceleration_covariance = [0.02] * 9
 
-    result = prepare_imu_message(source, "imu_link")
+    result = prepare_imu_message(source, "d455_imu_optical_frame")
 
     assert result.header.stamp == source.header.stamp
-    assert result.header.frame_id == "imu_link"
+    assert result.header.frame_id == source.header.frame_id
     assert result.angular_velocity == source.angular_velocity
     assert result.linear_acceleration == source.linear_acceleration
     assert list(result.angular_velocity_covariance) == [0.01] * 9
@@ -48,17 +49,30 @@ def test_prepare_imu_message_preserves_timestamp_measurements_and_covariance():
 
 
 def test_prepare_imu_message_does_not_claim_orientation():
-    result = prepare_imu_message(Imu(), "imu_link")
+    source = Imu()
+    source.header.frame_id = "d455_imu_optical_frame"
+
+    result = prepare_imu_message(source, "d455_imu_optical_frame")
 
     assert result.orientation_covariance[0] == -1.0
 
 
-@pytest.mark.parametrize("field", ["input_topic", "output_topic", "frame_id"])
+def test_prepare_imu_message_rejects_frame_relabeling():
+    source = Imu()
+    source.header.frame_id = "unexpected_frame"
+
+    with pytest.raises(ValueError, match="upstream IMU frame mismatch"):
+        prepare_imu_message(source, "d455_imu_optical_frame")
+
+
+@pytest.mark.parametrize(
+    "field", ["input_topic", "output_topic", "expected_frame_id"]
+)
 def test_validate_relay_config_rejects_empty_values(field):
     values = {
         "input_topic": "/raw/imu",
-        "output_topic": "/camera/imu",
-        "frame_id": "camera_imu_frame",
+        "output_topic": "/imu/d455/data_raw",
+        "expected_frame_id": "d455_imu_optical_frame",
     }
     values[field] = "  "
 
@@ -71,7 +85,7 @@ def test_validate_relay_config_rejects_absolute_same_topic():
         validate_relay_config(
             "/camera/imu",
             "/camera/imu",
-            "imu_link",
+            "d455_imu_optical_frame",
             topic_resolver=resolve_root_topic,
         )
 
@@ -81,18 +95,21 @@ def test_validate_relay_config_rejects_relative_absolute_equivalent_topics():
         validate_relay_config(
             "realsense/d455/imu",
             "/realsense/d455/imu",
-            "imu_link",
+            "d455_imu_optical_frame",
             topic_resolver=resolve_root_topic,
         )
 
 
-@pytest.mark.parametrize("output_topic", ["/camera/imu", "/custom/imu"])
+@pytest.mark.parametrize(
+    "output_topic", ["/imu/d455/data_raw", "/custom/imu"]
+)
 def test_validate_relay_config_accepts_safe_output_topics(output_topic):
     config = validate_relay_config(
         "/realsense/d455/imu",
         output_topic,
-        "imu_link",
+        "d455_imu_optical_frame",
         topic_resolver=resolve_root_topic,
     )
 
     assert config.output_topic == output_topic
+    assert config.expected_frame_id == "d455_imu_optical_frame"

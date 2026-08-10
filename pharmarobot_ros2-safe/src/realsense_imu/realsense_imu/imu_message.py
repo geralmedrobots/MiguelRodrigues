@@ -26,13 +26,13 @@ class RelayConfig:
 
     input_topic: str
     output_topic: str
-    frame_id: str
+    expected_frame_id: str
 
 
 def validate_relay_config(
     input_topic: str,
     output_topic: str,
-    frame_id: str,
+    expected_frame_id: str,
     *,
     topic_resolver: Callable[[str], str],
 ) -> RelayConfig:
@@ -40,7 +40,7 @@ def validate_relay_config(
     values = {
         "input_topic": input_topic.strip(),
         "output_topic": output_topic.strip(),
-        "frame_id": frame_id.strip(),
+        "expected_frame_id": expected_frame_id.strip(),
     }
     for name, value in values.items():
         if not value:
@@ -54,11 +54,21 @@ def validate_relay_config(
     return RelayConfig(**values)
 
 
-def prepare_imu_message(source: Imu, frame_id: str) -> Imu:
-    """Copy measured fields and explicitly mark orientation unavailable."""
+def prepare_imu_message(source: Imu, expected_frame_id: str) -> Imu:
+    """Preserve the raw frame and mark unsupported orientation unavailable."""
+    source_frame = source.header.frame_id.strip()
+    expected_frame = expected_frame_id.strip()
+    if not expected_frame:
+        raise ValueError("expected_frame_id must not be empty")
+    if source_frame != expected_frame:
+        raise ValueError(
+            "upstream IMU frame mismatch: "
+            f"expected {expected_frame!r}, received {source_frame!r}"
+        )
+
     target = Imu()
     target.header.stamp = source.header.stamp
-    target.header.frame_id = frame_id
+    target.header.frame_id = source_frame
 
     target.orientation_covariance[0] = -1.0
 

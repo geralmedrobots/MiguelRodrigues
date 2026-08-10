@@ -133,6 +133,43 @@ std::optional<ValidationError> validate_encoder_freshness_thresholds(
   return std::nullopt;
 }
 
+std::optional<ValidationError> validate_telemetry_timing(
+  bool enabled,
+  int poll_period_ms,
+  int query_timeout_ms,
+  int stale_after_ms,
+  int serial_transaction_timeout_ms,
+  int command_timeout_ms)
+{
+  if (!enabled) {
+    return std::nullopt;
+  }
+  if (poll_period_ms <= 0) {
+    return ValidationError{"telemetry_poll_period_ms", "must be positive"};
+  }
+  if (query_timeout_ms <= 0) {
+    return ValidationError{"telemetry_query_timeout_ms", "must be positive"};
+  }
+  if (stale_after_ms < poll_period_ms) {
+    return ValidationError{
+      "telemetry_stale_after_ms", "must be greater than or equal to telemetry_poll_period_ms"};
+  }
+  if (query_timeout_ms > serial_transaction_timeout_ms) {
+    return ValidationError{
+      "telemetry_query_timeout_ms", "must not exceed serial_transaction_timeout_ms"};
+  }
+  constexpr int kMaximumTelemetryQueryTimeoutMs = 100;
+  if (query_timeout_ms > kMaximumTelemetryQueryTimeoutMs) {
+    return ValidationError{
+      "telemetry_query_timeout_ms", "must not exceed the bounded 100 ms worker query budget"};
+  }
+  if (query_timeout_ms > command_timeout_ms) {
+    return ValidationError{
+      "telemetry_query_timeout_ms", "must not exceed cmd_timeout_s"};
+  }
+  return std::nullopt;
+}
+
 std::optional<ValidationError> validate(const DriverParameters & p)
 {
   const std::string trimmed_odom_frame = trim_copy(p.odom_frame);
@@ -254,6 +291,16 @@ std::optional<ValidationError> validate(const DriverParameters & p)
   }
   if (p.channel_1 == p.channel_2) {
     return ValidationError{"channel_2", "must map to a different wheel than channel_1"};
+  }
+  if (const auto error = validate_telemetry_timing(
+      p.telemetry_enabled,
+      p.telemetry_poll_period_ms,
+      p.telemetry_query_timeout_ms,
+      p.telemetry_stale_after_ms,
+      p.serial_transaction_timeout_ms,
+      static_cast<int>(std::max(1.0, p.command_timeout_s * 1000.0))))
+  {
+    return error;
   }
   return std::nullopt;
 }

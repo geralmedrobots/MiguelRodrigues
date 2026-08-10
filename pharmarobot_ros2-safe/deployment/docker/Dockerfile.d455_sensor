@@ -1,0 +1,64 @@
+ARG ROS_BASE_IMAGE=ros:humble-ros-base-jammy
+FROM ${ROS_BASE_IMAGE} AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-colcon-common-extensions \
+    ros-humble-ament-cmake \
+    ros-humble-diagnostic-msgs \
+    ros-humble-geometry-msgs \
+    ros-humble-launch \
+    ros-humble-launch-ros \
+    ros-humble-rclpy \
+    ros-humble-sensor-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /sensor_ws
+COPY src/realsense_imu /sensor_ws/src/realsense_imu
+RUN . /opt/ros/humble/setup.sh \
+    && colcon --log-base /sensor_ws/log build \
+      --install-base /sensor_ws/install \
+      --build-base /sensor_ws/build \
+      --packages-select realsense_imu
+
+FROM ${ROS_BASE_IMAGE} AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SOURCE_MANIFEST_SHA256=unknown
+ARG BASE_IMAGE_ID=unknown
+LABEL org.opencontainers.image.title="PharmaRobot D455 sensor runtime" \
+      pharmarobot.d455.sensor-image="true" \
+      pharmarobot.d455.source-manifest-sha256="${SOURCE_MANIFEST_SHA256}" \
+      pharmarobot.d455.base-image-id="${BASE_IMAGE_ID}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    psmisc \
+    ros-humble-diagnostic-msgs \
+    ros-humble-geometry-msgs \
+    ros-humble-launch \
+    ros-humble-launch-ros \
+    ros-humble-librealsense2 \
+    ros-humble-rclpy \
+    ros-humble-realsense2-camera \
+    ros-humble-realsense2-description \
+    ros-humble-rmw-fastrtps-cpp \
+    ros-humble-sensor-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /sensor_ws/install /sensor_ws/install
+COPY --chmod=0755 deployment/scripts/d455_sensor_entrypoint.sh \
+  /usr/local/bin/d455_sensor_entrypoint.sh
+
+ENV ROS_DOMAIN_ID=0 \
+    ROS_LOCALHOST_ONLY=0 \
+    RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+    FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    D455_SERIAL_NUMBER=146222250608
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+  CMD pgrep -f '[/]realsense2_camera_node' >/dev/null \
+      && pgrep -f '[/]imu_relay' >/dev/null \
+      && pgrep -f '[/]d455_imu_processor' >/dev/null \
+      || exit 1
+
+ENTRYPOINT ["/usr/local/bin/d455_sensor_entrypoint.sh"]

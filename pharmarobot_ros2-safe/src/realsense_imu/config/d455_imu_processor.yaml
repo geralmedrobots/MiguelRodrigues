@@ -1,0 +1,48 @@
+d455_imu_processor:
+  ros__parameters:
+    input_topic: /imu/d455/data_raw
+    output_topic: /imu/data
+    diagnostics_topic: /diagnostics
+    expected_raw_frame: d455_imu_optical_frame
+    processed_frame: d455_imu_link
+
+    # Explicit raw-optical to robot-aligned sensor rotation, xyzw.
+    # This right-handed cyclic mapping is:
+    #   raw +X -> processed +Y
+    #   raw +Y -> processed +Z (observed positive robot yaw)
+    #   raw +Z -> processed +X
+    # The complete mount transform remains provisional until all axes receive
+    # separately approved physical validation.
+    rotation_quaternion_xyzw: [0.5, 0.5, 0.5, 0.5]
+    transform_calibrated: false
+
+    # Source covariances are rotated exactly but remain upstream placeholders
+    # until a later stationary/rotation calibration establishes measured values.
+    covariance_calibrated: false
+
+    # Fail closed: do not publish the processed topic before initial bias
+    # calibration has accepted one complete stationary window.
+    publish_before_bias_ready: false
+
+    "bias.warmup_duration_s": 2.0
+    "bias.warmup_min_samples": 200
+    "bias.stationary_window_duration_s": 3.0
+    "bias.stationary_min_samples": 400
+    "bias.gyro_stationary_threshold_rad_s": 0.15
+    "bias.gravity_m_s2": 9.80665
+    "bias.acceleration_tolerance_m_s2": 1.0
+    "bias.max_sample_gap_s": 0.1
+    "bias.max_residual_stddev_rad_s": 0.02
+    "bias.online_update_enabled": true
+    "bias.online_update_alpha": 0.1
+    "bias.use_cmd_vel_zero_if_available": true
+    # Normal-runtime calibration fails closed without a fresh exact-zero safe
+    # command. The raw topic remains available while processed output waits.
+    "bias.require_cmd_vel_zero": true
+    "bias.cmd_vel_topic": /cmd_vel/safe
+    "bias.cmd_vel_zero_timeout_s": 0.5
+
+    "diagnostics.publish_period_s": 1.0
+    "diagnostics.stale_timeout_s": 0.5
+    "diagnostics.minimum_output_rate_hz": 50.0
+    "diagnostics.rate_window_samples": 200

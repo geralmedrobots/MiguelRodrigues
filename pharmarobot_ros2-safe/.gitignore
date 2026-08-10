@@ -5,3 +5,11 @@ log/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local development / validation artefacts
+.claude/
+backups/
+**/validation_evidence/
+**/.pytest_cache/
+*.bak
+**/validation_evidenceclear/

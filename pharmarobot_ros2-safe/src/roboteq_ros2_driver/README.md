@@ -672,3 +672,24 @@ separate approved step.
 
 * **Chad Attermann** - *Initial work* - [Ecos Technologies](https://github.com/ecostech)
 * **Chase Devitt** - *ROS2 Migration*
+# Bounded controller telemetry
+
+The optional `telemetry_enabled` parameter adds controller-side telemetry to the
+existing `/diagnostics` stream. It is disabled by default. When enabled, the
+single serial worker polls one query at a time (never a second serial reader)
+at `telemetry_poll_period_ms`, with `telemetry_query_timeout_ms` as the per-query
+deadline and `telemetry_stale_after_ms` as the freshness limit. A pending motor
+command, timeout stop, reconnect, or framing recovery always takes priority over
+telemetry.
+
+Each complete snapshot contains these exact controller queries for both channels:
+
+`?CIS <n>`, `?M <n>`, `?S <n>`, `?A <n>`, `?P <n>`, `?FM <n>`, plus global `?FF`.
+
+The snapshot is published as `roboteq/channel_1_telemetry` and
+`roboteq/channel_2_telemetry` entries in `/diagnostics`, with a shared ROS
+timestamp and `sample_time_steady_ns`. `CIS`, applied `M`, measured `S`, current
+`A`, power `P`, `FM`, and `FF` are preserved as controller raw integer values;
+the driver performs no unit conversion because scaling varies by controller
+operating mode and firmware. Invalid, incomplete, timed-out, extra, or stale
+replies are never published as valid telemetry and produce an ERROR diagnostic.

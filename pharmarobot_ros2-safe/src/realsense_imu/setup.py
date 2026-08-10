@@ -29,7 +29,17 @@ setup(
             [f"resource/{package_name}"],
         ),
         (f"share/{package_name}", ["package.xml", "README.md"]),
-        (f"share/{package_name}/launch", ["launch/d455_imu.launch.py"]),
+        (
+            f"share/{package_name}/launch",
+            [
+                "launch/d455_imu.launch.py",
+                "launch/robot_sensors.launch.py",
+            ],
+        ),
+        (
+            f"share/{package_name}/config",
+            ["config/d455_imu_processor.yaml"],
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -40,6 +50,10 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "d455_apparmor_profile = realsense_imu.apparmor_profile:main",
+            "d455_imu_capture_analysis = realsense_imu.capture_analysis:main",
+            "d455_usb_preflight = realsense_imu.usb_device:main",
+            "d455_imu_processor = realsense_imu.imu_processor:main",
             "imu_relay = realsense_imu.imu_relay:main",
         ],
     },

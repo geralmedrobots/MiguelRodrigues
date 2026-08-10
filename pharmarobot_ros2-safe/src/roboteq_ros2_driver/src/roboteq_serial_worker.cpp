@@ -354,10 +354,39 @@ std::optional<DiagnosticTelemetry> SerialIoWorker::latestDiagnosticTelemetry() c
   return telemetry;
 }
 
+std::optional<MotorTelemetrySnapshot> SerialIoWorker::latestMotorTelemetry() const
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  auto telemetry = latest_motor_telemetry_;
+  if (!telemetry.has_value()) {
+    return telemetry;
+  }
+  telemetry->age = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - telemetry->timestamp);
+  telemetry->channel_1.age = telemetry->age;
+  telemetry->channel_2.age = telemetry->age;
+  if (telemetry->age > config_.telemetry_stale_after) {
+    telemetry->valid = false;
+    telemetry->failure_reason = "telemetry is stale";
+    telemetry->channel_1.valid = false;
+    telemetry->channel_2.valid = false;
+  }
+  if (telemetry->connection_generation != connection_generation_) {
+    // Snapshot generation is represented by the worker connection sequence in
+    // the sample sequence; a reconnect invalidates all previous samples.
+    telemetry->valid = false;
+    telemetry->channel_1.valid = false;
+    telemetry->channel_2.valid = false;
+    telemetry->failure_reason = "telemetry belongs to an old connection generation";
+  }
+  return telemetry;
+}
+
 void SerialIoWorker::run()
 {
   auto next_encoder_poll = std::chrono::steady_clock::now();
   auto next_reconnect = std::chrono::steady_clock::now();
+  auto next_telemetry_poll = std::chrono::steady_clock::now();
 
   while (true) {
     {
@@ -407,6 +436,7 @@ void SerialIoWorker::run()
             reconnect_correlation, reconnect_generation, "", 0});
       }
       next_encoder_poll = std::chrono::steady_clock::now() + config_.encoder_poll_period;
+      next_telemetry_poll = std::chrono::steady_clock::now() + config_.telemetry_poll_period;
       next_reconnect = std::chrono::steady_clock::time_point::max();
     }
 
@@ -533,6 +563,36 @@ void SerialIoWorker::run()
       next_encoder_poll = std::chrono::steady_clock::now() + config_.encoder_poll_period;
     }
 
+    bool telemetry_allowed = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      const bool timeout_stop_now = desired_command_.valid && !applied_stopped_ &&
+        std::chrono::steady_clock::now() - desired_command_.received_time >=
+        config_.command_timeout;
+      const bool pending_command_now = desired_command_.valid &&
+        desired_command_.sequence > applied_sequence_ &&
+        desired_command_.sequence >= minimum_motion_sequence_;
+      telemetry_allowed = config_.telemetry_enabled &&
+        framing_state_ == SerialFramingState::synchronized &&
+        !timeout_stop_now && !pending_command_now &&
+        std::chrono::steady_clock::now() >= next_telemetry_poll;
+    }
+    if (telemetry_allowed) {
+      if (!pollMotorTelemetry(error)) {
+        markFailure(error);
+        next_reconnect = std::chrono::steady_clock::now() + config_.reconnect_interval;
+        continue;
+      }
+      // Continue an in-progress snapshot immediately, but return to the main loop
+      // between every query so a pending command, timeout stop, or recovery always
+      // wins over the next telemetry transaction.  Only a completed snapshot starts
+      // the configured bounded-rate polling interval.
+      next_telemetry_poll = telemetry_query_index_ == 0 ?
+        std::chrono::steady_clock::now() + config_.telemetry_poll_period :
+        std::chrono::steady_clock::now();
+      continue;
+    }
+
 
     std::optional<DiagnosticQueryKind> diagnostic_query;
     {
@@ -558,13 +618,17 @@ void SerialIoWorker::run()
     }
 
     std::unique_lock<std::mutex> lock(state_mutex_);
+    const auto next_feedback_wake = config_.telemetry_enabled ?
+      std::min(next_encoder_poll, next_telemetry_poll) : next_encoder_poll;
     state_cv_.wait_until(
       lock,
-      nextWakeTime(std::chrono::steady_clock::now(), next_encoder_poll, next_reconnect),
-      [this]() {
+      nextWakeTime(std::chrono::steady_clock::now(), next_feedback_wake, next_reconnect),
+      [this, &next_telemetry_poll]() {
         return stop_requested_ ||
         runtime_stop_pending_ ||
         queued_diagnostic_query_.has_value() || diagnostic_recovery_pending_ ||
+        (config_.telemetry_enabled &&
+        std::chrono::steady_clock::now() >= next_telemetry_poll) ||
         (desired_command_.valid &&
         desired_command_.sequence > applied_sequence_ &&
         desired_command_.sequence >= minimum_motion_sequence_);
@@ -607,6 +671,8 @@ bool SerialIoWorker::connectAndValidate(std::string & error)
       timed_out_diagnostic_.reset();
       queued_diagnostic_query_.reset();
       invalidateDiagnosticTelemetry("connection generation changed");
+      latest_motor_telemetry_.reset();
+      telemetry_query_index_ = 0;
       status_update_sequence_++;
     }
     const auto startup_drain = transport_->drainStartupInput(config_.startup_drain_bounds);
@@ -681,7 +747,23 @@ bool SerialIoWorker::sendOwnedCommands(
   std::chrono::steady_clock::time_point * write_accepted_at,
   bool * write_fully_accepted)
 {
+  uint64_t command_sequence = 0;
+  uint64_t connection_generation = 0;
+  if (config_.serial_command_log_observer) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    command_sequence = latest_submitted_sequence_;
+    connection_generation = connection_generation_;
+  }
   const auto result = transport_->commandTransaction(commands, config_.command_transaction_bounds);
+  if (config_.serial_command_log_observer) {
+    observeSerialCommandLog(
+      SerialCommandLogEvent{
+        result.write_accepted_at == std::chrono::steady_clock::time_point{} ?
+        std::chrono::steady_clock::now() : result.write_accepted_at,
+        command_sequence,
+        connection_generation,
+        commands});
+  }
   last_command_transaction_owned_ = result.status == CommandTransportStatus::success;
   if (write_accepted_at != nullptr) {
     *write_accepted_at = result.write_accepted_at;
@@ -790,6 +872,18 @@ void SerialIoWorker::observeStopRequest(const StopRequestEvent & event) const no
     config_.stop_request_observer(event);
   } catch (...) {
     // Validation observability must never alter stop behavior.
+  }
+}
+
+void SerialIoWorker::observeSerialCommandLog(const SerialCommandLogEvent & event) const noexcept
+{
+  if (!config_.serial_command_log_observer) {
+    return;
+  }
+  try {
+    config_.serial_command_log_observer(event);
+  } catch (...) {
+    // Command logging must never alter command transmission or recovery behavior.
   }
 }
 
@@ -931,6 +1025,89 @@ bool SerialIoWorker::pollEncoder(std::string & error)
     encoder_sequence_,
     true};
   status_update_sequence_++;
+  return true;
+}
+
+bool SerialIoWorker::pollMotorTelemetry(std::string & error)
+{
+  (void)error;
+  const auto & queries = motorTelemetryQueries();
+  if (telemetry_query_index_ == 0) {
+    telemetry_build_channel_1_ = MotorTelemetryChannel{1};
+    telemetry_build_channel_2_ = MotorTelemetryChannel{2};
+    telemetry_build_fault_flags_ = 0;
+    telemetry_build_started_at_ = std::chrono::steady_clock::now();
+    telemetry_failure_reason_.clear();
+  }
+
+  const auto & query = queries[telemetry_query_index_];
+  std::string response;
+  std::string query_error;
+  const auto query_started = std::chrono::steady_clock::now();
+  const bool query_ok = transport_->queryWithTimeout(
+    query.command,
+    query.expected_prefix,
+    config_.telemetry_query_timeout,
+    response,
+    query_error);
+  const auto query_elapsed = std::chrono::steady_clock::now() - query_started;
+  if (!query_ok || query_elapsed > config_.telemetry_query_timeout) {
+    telemetry_failure_reason_ = query_error.empty() ?
+      "telemetry query failed or exceeded timeout" : query_error;
+    scheduleOwnershipRecovery(query_started);
+  } else {
+    std::string parse_error;
+    const auto value = parseMotorTelemetryInteger(response, query.expected_prefix, parse_error);
+    if (!value.has_value()) {
+      telemetry_failure_reason_ = parse_error;
+    } else if (query.field == MotorTelemetryField::fault_flags) {
+      telemetry_build_fault_flags_ = *value;
+    } else {
+      auto & channel = query.channel == 1 ? telemetry_build_channel_1_ : telemetry_build_channel_2_;
+      switch (query.field) {
+        case MotorTelemetryField::command_source: channel.command_source = *value; break;
+        case MotorTelemetryField::applied_command: channel.applied_command = *value; break;
+        case MotorTelemetryField::measured_speed: channel.measured_speed = *value; break;
+        case MotorTelemetryField::current: channel.current = *value; break;
+        case MotorTelemetryField::power: channel.power = *value; break;
+        case MotorTelemetryField::motor_fault: channel.motor_fault = *value; break;
+        case MotorTelemetryField::fault_flags: break;
+      }
+    }
+  }
+
+  if (!telemetry_failure_reason_.empty()) {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    latest_motor_telemetry_ = MotorTelemetrySnapshot{
+      telemetry_build_channel_1_, telemetry_build_channel_2_, now, std::chrono::milliseconds(0),
+      false, telemetry_failure_reason_, telemetry_sequence_, connection_generation_};
+    latest_motor_telemetry_->channel_1.failure_reason = telemetry_failure_reason_;
+    latest_motor_telemetry_->channel_2.failure_reason = telemetry_failure_reason_;
+    telemetry_query_index_ = 0;
+    return true;
+  }
+
+  ++telemetry_query_index_;
+  if (telemetry_query_index_ < queries.size()) {
+    return true;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  telemetry_build_channel_1_.timestamp = now;
+  telemetry_build_channel_2_.timestamp = now;
+  telemetry_build_channel_1_.valid = true;
+  telemetry_build_channel_2_.valid = true;
+  telemetry_build_channel_1_.fault_flags = telemetry_build_fault_flags_;
+  telemetry_build_channel_2_.fault_flags = telemetry_build_fault_flags_;
+  telemetry_build_channel_1_.failure_reason.clear();
+  telemetry_build_channel_2_.failure_reason.clear();
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  ++telemetry_sequence_;
+  latest_motor_telemetry_ = MotorTelemetrySnapshot{
+    telemetry_build_channel_1_, telemetry_build_channel_2_, now, std::chrono::milliseconds(0),
+    true, "", telemetry_sequence_, connection_generation_};
+  telemetry_query_index_ = 0;
   return true;
 }
 

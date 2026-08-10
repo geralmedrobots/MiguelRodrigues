@@ -67,6 +67,10 @@ struct DriverParameters
   std::string channel_2;
   double encoder_freshness_warn_s{0.25};
   double encoder_freshness_error_s{1.0};
+  bool telemetry_enabled{false};
+  int telemetry_poll_period_ms{200};
+  int telemetry_query_timeout_ms{50};
+  int telemetry_stale_after_ms{1000};
 };
 
 struct ValidationError
@@ -79,6 +83,14 @@ std::optional<ValidationError> validate(const DriverParameters & parameters);
 
 std::optional<ValidationError> validate_encoder_freshness_thresholds(
   double warn_s, double error_s);
+
+std::optional<ValidationError> validate_telemetry_timing(
+  bool enabled,
+  int poll_period_ms,
+  int query_timeout_ms,
+  int stale_after_ms,
+  int serial_transaction_timeout_ms,
+  int command_timeout_ms);
 
 // The callback is the startup boundary. Callers must perform all subsystem and ROS
 // entity initialization inside it. It is never invoked for invalid parameters.

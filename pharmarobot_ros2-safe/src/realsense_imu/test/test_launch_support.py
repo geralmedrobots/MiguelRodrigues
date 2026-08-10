@@ -17,15 +17,17 @@ from pathlib import Path
 import pytest
 
 from realsense_imu.launch_support import camera_launch_arguments
+from realsense_imu.launch_support import DEFAULT_EXPECTED_FRAME_ID
+from realsense_imu.launch_support import DEFAULT_RAW_TOPIC
 from realsense_imu.launch_support import normalize_serial_number
 from realsense_imu.launch_support import realsense_launch_path
 
 
 @pytest.mark.parametrize(
-    "value", ["151223061922", "_151223061922", " 151223061922 "]
+    "value", ["146222250608", "_146222250608", " 146222250608 "]
 )
 def test_normalize_serial_number_applies_wrapper_prefix(value):
-    assert normalize_serial_number(value) == "_151223061922"
+    assert normalize_serial_number(value) == "_146222250608"
 
 
 @pytest.mark.parametrize("value", ["", "_", "not-a-serial"])
@@ -35,9 +37,9 @@ def test_normalize_serial_number_rejects_invalid_values(value):
 
 
 def test_camera_launch_arguments_enable_only_motion_streams():
-    arguments = camera_launch_arguments("_151223061922")
+    arguments = camera_launch_arguments("_146222250608")
 
-    assert arguments["serial_no"] == "_151223061922"
+    assert arguments["serial_no"] == "_146222250608"
     assert arguments["enable_gyro"] == "true"
     assert arguments["enable_accel"] == "true"
     assert arguments["unite_imu_method"] == "2"
@@ -56,6 +58,12 @@ def test_camera_launch_arguments_enable_only_motion_streams():
         "align_depth.enable",
     ):
         assert arguments[stream] == "false"
+
+
+def test_public_raw_topic_and_frame_are_sensor_native():
+    assert DEFAULT_RAW_TOPIC == "/imu/d455/data_raw"
+    assert DEFAULT_EXPECTED_FRAME_ID == "d455_imu_optical_frame"
+    assert DEFAULT_EXPECTED_FRAME_ID != "base_link"
 
 
 def test_realsense_launch_path_reports_missing_package():

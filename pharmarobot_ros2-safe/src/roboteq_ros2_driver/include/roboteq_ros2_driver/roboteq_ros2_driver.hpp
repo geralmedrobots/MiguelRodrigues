@@ -123,6 +123,11 @@ private:
   double serial_reconnect_interval_s_{1.0};
   int encoder_poll_period_ms_{50};
   bool require_fresh_command_after_reconnect_{true};
+  bool log_serial_commands_{false};
+  bool telemetry_enabled_{false};
+  int telemetry_poll_period_ms_{200};
+  int telemetry_query_timeout_ms_{50};
+  int telemetry_stale_after_ms_{1000};
   double diagnostics_publish_rate_hz_{1.0};
   double encoder_freshness_warn_s_{0.25};
   double encoder_freshness_error_s_{1.0};

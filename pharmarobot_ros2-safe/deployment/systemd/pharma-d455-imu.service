@@ -1,0 +1,18 @@
+[Unit]
+Description=PharmaRobot production D455 sensor container
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/pharmarobot
+ExecStart=/usr/local/bin/pharma_d455_sensor_container.sh run
+ExecStop=/usr/local/bin/pharma_d455_sensor_container.sh stop
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

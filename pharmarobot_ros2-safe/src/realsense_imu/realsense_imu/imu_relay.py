@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Relay the official RealSense combined IMU topic with stable local naming."""
+"""Relay the official RealSense combined IMU without relabeling its frame."""
 
 from typing import Optional, Sequence
 
@@ -23,24 +23,30 @@ from sensor_msgs.msg import Imu
 
 from realsense_imu.imu_message import prepare_imu_message
 from realsense_imu.imu_message import validate_relay_config
+from realsense_imu.launch_support import DEFAULT_EXPECTED_FRAME_ID
+from realsense_imu.launch_support import DEFAULT_RAW_TOPIC
+from realsense_imu.launch_support import UPSTREAM_IMU_TOPIC
 
 
 class ImuRelay(Node):
-    """Apply the configured topic and frame ID to upstream IMU samples."""
+    """Expose a stable raw topic while preserving the upstream sensor frame."""
 
     def __init__(self) -> None:
         super().__init__("realsense_imu_relay")
-        self.declare_parameter("input_topic", "/realsense/d455/imu")
-        self.declare_parameter("output_topic", "/camera/imu")
-        self.declare_parameter("frame_id", "d455_gyro_optical_frame")
+        self.declare_parameter("input_topic", UPSTREAM_IMU_TOPIC)
+        self.declare_parameter("output_topic", DEFAULT_RAW_TOPIC)
+        self.declare_parameter(
+            "expected_frame_id", DEFAULT_EXPECTED_FRAME_ID
+        )
 
         config = validate_relay_config(
             self.get_parameter("input_topic").value,
             self.get_parameter("output_topic").value,
-            self.get_parameter("frame_id").value,
+            self.get_parameter("expected_frame_id").value,
             topic_resolver=self.resolve_topic_name,
         )
-        self._frame_id = config.frame_id
+        self._expected_frame_id = config.expected_frame_id
+        self._frame_mismatch_reported = False
         self._publisher = self.create_publisher(
             Imu, config.output_topic, qos_profile_sensor_data
         )
@@ -52,7 +58,17 @@ class ImuRelay(Node):
         )
 
     def _relay(self, message: Imu) -> None:
-        self._publisher.publish(prepare_imu_message(message, self._frame_id))
+        try:
+            prepared = prepare_imu_message(
+                message, self._expected_frame_id
+            )
+        except ValueError as error:
+            if not self._frame_mismatch_reported:
+                self.get_logger().error(str(error))
+                self._frame_mismatch_reported = True
+            return
+        self._frame_mismatch_reported = False
+        self._publisher.publish(prepared)
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
@@ -62,7 +78,9 @@ def main(args: Optional[Sequence[str]] = None) -> None:
     try:
         node = ImuRelay()
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()

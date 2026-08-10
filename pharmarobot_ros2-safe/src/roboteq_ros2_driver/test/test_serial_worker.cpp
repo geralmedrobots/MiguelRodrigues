@@ -469,6 +469,24 @@ bool waitForCommand(
   return false;
 }
 
+bool waitForQuery(
+  const std::shared_ptr<FakeTransportState> & state,
+  const std::string & query,
+  std::chrono::milliseconds timeout = 500ms)
+{
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      if (std::find(state->queries.begin(), state->queries.end(), query) != state->queries.end()) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  return false;
+}
+
 bool isStopBatch(const std::vector<std::string> & batch)
 {
   return batch == std::vector<std::string>{"!G 1 0\r", "!G 2 0\r", "!S 1 0\r", "!S 2 0\r"};
@@ -1052,6 +1070,95 @@ TEST(SerialIoWorkerDiagnosticRecovery, ReconnectFailureRemainsFailClosed)
   EXPECT_FALSE(worker.isReadyForMotion());
   EXPECT_EQ(worker.status().connection_generation, 1u);
   EXPECT_EQ(state->recovery_calls, 1);
+  worker.stop();
+}
+
+TEST(SerialIoWorkerCommandLogging, ObserverRunsAfterTransportWrite)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  std::mutex observer_mutex;
+  std::condition_variable observer_cv;
+  bool observed_expected_command = false;
+  bool observed_after_write_completed = false;
+  std::vector<std::vector<std::string>> observed_commands;
+
+  auto config = workerConfig();
+  config.encoder_poll_period = 1000ms;
+  config.serial_command_log_observer =
+    [&](const driver::SerialCommandLogEvent & event) {
+      if (event.commands == std::vector<std::string>{"!S 1 12\r", "!S 2 -12\r"}) {
+        bool after_write_completed = false;
+        {
+          std::lock_guard<std::mutex> state_lock(state->mutex);
+          after_write_completed = std::any_of(
+            state->write_observations.begin(), state->write_observations.end(),
+            [](const auto & observation) {
+              return observation.succeeded &&
+              observation.commands == std::vector<std::string>{"!S 1 12\r", "!S 2 -12\r"};
+            });
+        }
+        std::lock_guard<std::mutex> lock(observer_mutex);
+        observed_after_write_completed = after_write_completed;
+        observed_expected_command = true;
+        observed_commands.push_back(event.commands);
+        observer_cv.notify_all();
+      }
+    };
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->hold_write = true;
+  }
+  worker.submitCommand(0.2, -0.2);
+  {
+    std::unique_lock<std::mutex> lock(state->mutex);
+    ASSERT_TRUE(state->cv.wait_for(lock, 500ms, [&]() {return state->write_entered;}));
+  }
+  {
+    std::unique_lock<std::mutex> lock(observer_mutex);
+    EXPECT_FALSE(
+      observer_cv.wait_for(lock, 50ms, [&]() {return observed_expected_command;}));
+  }
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->release_write = true;
+    state->cv.notify_all();
+  }
+  ASSERT_TRUE(waitForCommand(state, "!S 1 12\r"));
+  {
+    std::unique_lock<std::mutex> lock(observer_mutex);
+    ASSERT_TRUE(
+      observer_cv.wait_for(lock, 500ms, [&]() {return observed_expected_command;}));
+  }
+  EXPECT_TRUE(observed_after_write_completed);
+  ASSERT_EQ(observed_commands.size(), 1u);
+  EXPECT_EQ(observed_commands.front()[0], "!S 1 12\r");
+  EXPECT_EQ(observed_commands.front()[1], "!S 2 -12\r");
+  worker.stop();
+}
+
+TEST(SerialIoWorkerCommandLogging, ObserverExceptionsDoNotBlockCommandTransmission)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.encoder_poll_period = 1000ms;
+  config.serial_command_log_observer = [](const driver::SerialCommandLogEvent &) {
+      throw std::runtime_error("injected observer failure");
+    };
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  worker.submitCommand(-0.2, 0.2);
+  ASSERT_TRUE(waitForCommand(state, "!S 1 -12\r"));
+  ASSERT_TRUE(waitForCommand(state, "!S 2 12\r"));
   worker.stop();
 }
 
@@ -2198,5 +2305,149 @@ TEST(SerialIoWorkerReadiness, ReconnectReturnsToWaitingBeforeFreshCommandCanResu
   EXPECT_EQ(ready_status.connection_state, driver::SerialConnectionState::ready);
   EXPECT_TRUE(worker.isReadyForMotion());
   expectReadinessConsistent(worker);
+  worker.stop();
+}
+
+TEST(SerialIoWorkerTelemetry, PollsAllFieldsThroughWorkerAndPublishesCompleteSnapshot)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.telemetry_enabled = true;
+  config.telemetry_poll_period = 1ms;
+  config.telemetry_query_timeout = 20ms;
+  config.telemetry_stale_after = 200ms;
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  std::optional<driver::MotorTelemetrySnapshot> snapshot;
+  while (std::chrono::steady_clock::now() < deadline) {
+    snapshot = worker.latestMotorTelemetry();
+    if (snapshot.has_value() && snapshot->valid) {
+      break;
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_TRUE(snapshot.has_value());
+  ASSERT_TRUE(snapshot->valid);
+  EXPECT_TRUE(snapshot->channel_1.valid);
+  EXPECT_TRUE(snapshot->channel_2.valid);
+  EXPECT_EQ(snapshot->channel_1.applied_command, 1);
+  EXPECT_EQ(snapshot->channel_2.measured_speed, 1);
+  EXPECT_EQ(snapshot->channel_1.fault_flags, 1);
+  EXPECT_EQ(snapshot->channel_2.motor_fault, 1);
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    EXPECT_TRUE(std::find(state->queries.begin(), state->queries.end(), "?CIS 1\r") !=
+      state->queries.end());
+    EXPECT_TRUE(std::find(state->queries.begin(), state->queries.end(), "?FM 2\r") !=
+      state->queries.end());
+  }
+  worker.stop();
+}
+
+TEST(SerialIoWorkerTelemetry, TimeoutSchedulesRecoveryAndDoesNotWriteMotorCommands)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  state->query_delay = 30ms;
+  auto config = workerConfig();
+  config.telemetry_enabled = true;
+  config.telemetry_poll_period = 1ms;
+  config.telemetry_query_timeout = 5ms;
+  config.telemetry_stale_after = 200ms;
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  std::this_thread::sleep_for(100ms);
+  const auto snapshot = worker.latestMotorTelemetry();
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_FALSE(snapshot->valid);
+  EXPECT_NE(snapshot->failure_reason.find("timeout"), std::string::npos);
+  EXPECT_TRUE(waitForRecoveryCalls(state, 1));
+  const auto batches = writeBatches(state);
+  for (const auto & batch : batches) {
+    for (const auto & command : batch) {
+      EXPECT_TRUE(
+        command == "!G 1 0\r" || command == "!G 2 0\r" ||
+        command == "!S 1 0\r" || command == "!S 2 0\r")
+        << "unexpected nonzero command during telemetry timeout: " << command;
+    }
+  }
+  worker.stop();
+}
+
+TEST(SerialIoWorkerTelemetry, NewMotorCommandPreemptsTelemetryScheduling)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.telemetry_enabled = true;
+  config.telemetry_poll_period = 1ms;
+  config.telemetry_query_timeout = 20ms;
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  ASSERT_EQ(
+    waitForWorkerState(worker, driver::SerialConnectionState::waiting_for_fresh_command).
+    connection_state,
+    driver::SerialConnectionState::waiting_for_fresh_command);
+  worker.submitCommand(0.2, -0.2);
+  ASSERT_TRUE(waitForCommand(state, "!S 1 12\r"));
+  const auto writes = writeBatches(state);
+  const auto motion_batch = std::find(
+    writes.begin(), writes.end(),
+    std::vector<std::string>{"!S 1 12\r", "!S 2 -12\r"});
+  ASSERT_NE(motion_batch, writes.end());
+  worker.stop();
+}
+
+TEST(SerialIoWorkerTelemetry, CommandArrivingDuringSnapshotPreemptsNextQuery)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  state->query_delay = 15ms;
+  auto config = workerConfig();
+  config.telemetry_enabled = true;
+  config.telemetry_poll_period = 1ms;
+  config.telemetry_query_timeout = 20ms;
+  config.encoder_poll_period = 500ms;
+  config.command_timeout = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  ASSERT_TRUE(waitForQuery(state, "?FF\r"));
+  worker.submitCommand(0.2, -0.2);
+  ASSERT_TRUE(waitForCommand(state, "!S 1 12\r"));
+  const auto writes = writeBatches(state);
+  ASSERT_NE(
+    std::find(writes.begin(), writes.end(),
+      std::vector<std::string>{"!S 1 12\r", "!S 2 -12\r"}), writes.end());
+  worker.stop();
+}
+
+TEST(SerialIoWorkerTelemetry, StaleSnapshotIsInvalidated)
+{
+  auto state = std::make_shared<FakeTransportState>();
+  auto config = workerConfig();
+  config.telemetry_enabled = true;
+  config.telemetry_poll_period = 100ms;
+  config.telemetry_query_timeout = 20ms;
+  config.telemetry_stale_after = 1ms;
+  config.encoder_poll_period = 500ms;
+  driver::SerialIoWorker worker(std::make_unique<FakeTransport>(state), config);
+  worker.start();
+  std::optional<driver::MotorTelemetrySnapshot> snapshot;
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    snapshot = worker.latestMotorTelemetry();
+    if (snapshot.has_value() && snapshot->sequence > 0) {
+      break;
+    }
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_TRUE(snapshot.has_value());
+  std::this_thread::sleep_for(5ms);
+  snapshot = worker.latestMotorTelemetry();
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_FALSE(snapshot->valid);
+  EXPECT_EQ(snapshot->failure_reason, "telemetry is stale");
   worker.stop();
 }

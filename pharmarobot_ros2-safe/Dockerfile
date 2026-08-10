@@ -32,7 +32,8 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" \
       > /etc/apt/sources.list.d/ros2.list
 
-# Install ROS and the persistent joystick dependency.
+# Install ROS and the persistent joystick dependency. The D455 acquisition
+# stack is built in the dedicated production sensor image.
 # rosdep is not required because this image installs dependencies explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \

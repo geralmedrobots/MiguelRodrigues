@@ -28,6 +28,13 @@ roboteq_ros2_driver:
     serial_reconnect_interval_s: 1.0
     encoder_poll_period_ms: 50
     require_fresh_command_after_reconnect: true
+    # Diagnostic observability: record each exact serial command batch before it is written.
+    log_serial_commands: true
+    # Optional bounded controller telemetry. Disabled by default to preserve command timing.
+    telemetry_enabled: true
+    telemetry_poll_period_ms: 200
+    telemetry_query_timeout_ms: 50
+    telemetry_stale_after_ms: 1000
     channel_1: "left" # physical left motor
     channel_2: "right" # physical right motor
     odom_pose_covariance_x: 0.05

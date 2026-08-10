@@ -69,6 +69,8 @@ struct DiagnosticsState
   std::optional<SerialWorkerStatus> worker_status{};
   ControllerSafetySignal controller_faults{ControllerSafetySignal::unsupported};
   ControllerSafetySignal sto_status{ControllerSafetySignal::unsupported};
+  bool motor_telemetry_enabled{false};
+  std::optional<MotorTelemetrySnapshot> motor_telemetry{};
 };
 
 struct DiagnosticsPublicationDecision

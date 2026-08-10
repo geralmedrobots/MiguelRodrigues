@@ -43,6 +43,7 @@
 
 #include "roboteq_ros2_driver/roboteq_configuration.hpp"
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
+#include "roboteq_ros2_driver/roboteq_telemetry.hpp"
 
 namespace roboteq_ros2_driver
 {
@@ -177,6 +178,14 @@ struct StopRequestEvent
   std::size_t byte_count{0};
 };
 
+struct SerialCommandLogEvent
+{
+  std::chrono::steady_clock::time_point timestamp{};
+  uint64_t command_sequence{0};
+  uint64_t connection_generation{0};
+  std::vector<std::string> commands;
+};
+
 struct SerialWorkerConfig
 {
   bool open_loop{false};
@@ -186,6 +195,10 @@ struct SerialWorkerConfig
   std::chrono::milliseconds encoder_poll_period{50};
   std::chrono::milliseconds reconnect_interval{1000};
   std::chrono::milliseconds diagnostic_query_timeout{100};
+  bool telemetry_enabled{false};
+  std::chrono::milliseconds telemetry_poll_period{200};
+  std::chrono::milliseconds telemetry_query_timeout{50};
+  std::chrono::milliseconds telemetry_stale_after{1000};
   StartupDrainBounds startup_drain_bounds{};
   CommandTransactionBounds command_transaction_bounds{};
   DiagnosticRecoveryBounds diagnostic_recovery_bounds{};
@@ -194,6 +207,7 @@ struct SerialWorkerConfig
   std::function<void(const std::string &)> log_callback;
   std::function<void(const TimeoutStopEvent &)> timeout_stop_observer;
   std::function<void(const StopRequestEvent &)> stop_request_observer;
+  std::function<void(const SerialCommandLogEvent &)> serial_command_log_observer;
   std::function<void(const DiagnosticPhaseEvent &)> diagnostic_phase_observer;
   std::function<void(const DiagnosticResultEvent &)> diagnostic_result_observer;
 };
@@ -221,6 +235,7 @@ public:
   SerialWorkerStatus status() const;
   bool queueDiagnosticQuery(DiagnosticQueryKind query);
   std::optional<DiagnosticTelemetry> latestDiagnosticTelemetry() const;
+  std::optional<MotorTelemetrySnapshot> latestMotorTelemetry() const;
 
 private:
   enum class DiagnosticRecoveryAttempt
@@ -243,12 +258,14 @@ private:
   void scheduleOwnershipRecovery(std::chrono::steady_clock::time_point started_at);
   bool executePendingRuntimeStop(std::string & error);
   void observeStopRequest(const StopRequestEvent & event) const noexcept;
+  void observeSerialCommandLog(const SerialCommandLogEvent & event) const noexcept;
   void observeDiagnosticPhase(const DiagnosticPhaseEvent & event) const noexcept;
   void observeTimeoutStop(const TimeoutStopEvent & event) const noexcept;
   bool sendDesiredCommand(const DesiredMotorCommand & command, std::string & error);
   bool validateControllerConfiguration(std::string & error);
   bool validateCommunication(std::string & error);
   bool pollEncoder(std::string & error);
+  bool pollMotorTelemetry(std::string & error);
   DiagnosticRecoveryAttempt performDiagnosticRecovery(std::string & error);
   bool executeDiagnosticQuery(DiagnosticQueryKind query);
   void invalidateDiagnosticTelemetry(const std::string & reason);
@@ -290,6 +307,14 @@ private:
   bool diagnostic_recovery_pending_{false};
   bool diagnostic_recovery_start_reserved_{false};
   std::optional<DiagnosticTelemetry> latest_diagnostic_telemetry_;
+  std::optional<MotorTelemetrySnapshot> latest_motor_telemetry_;
+  MotorTelemetryChannel telemetry_build_channel_1_{1};
+  MotorTelemetryChannel telemetry_build_channel_2_{2};
+  int64_t telemetry_build_fault_flags_{0};
+  std::size_t telemetry_query_index_{0};
+  uint64_t telemetry_sequence_{0};
+  std::chrono::steady_clock::time_point telemetry_build_started_at_{};
+  std::string telemetry_failure_reason_;
   SerialConnectionState state_{SerialConnectionState::disconnected};
   std::thread worker_thread_;
 };

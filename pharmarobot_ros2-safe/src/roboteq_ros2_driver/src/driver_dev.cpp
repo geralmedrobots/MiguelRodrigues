@@ -70,6 +70,27 @@
 
 namespace
 {
+std::string visible_serial_command(const std::string & command)
+{
+  std::string visible;
+  for (const unsigned char ch : command) {
+    if (ch == '\r') {
+      visible += "\\r";
+    } else if (ch == '\n') {
+      visible += "\\n";
+    } else if (ch == '\t') {
+      visible += "\\t";
+    } else if (ch == '\\') {
+      visible += "\\\\";
+    } else if (ch >= 0x20 && ch <= 0x7e) {
+      visible += static_cast<char>(ch);
+    } else {
+      visible += "?";
+    }
+  }
+  return visible;
+}
+
 double sanitize_covariance_parameter(
   const rclcpp::Logger & logger,
   const char * name,
@@ -226,6 +247,11 @@ Roboteq::Roboteq()
   encoder_freshness_error_s_ = this->declare_parameter("encoder_freshness_error_s", 1.0);
   require_fresh_command_after_reconnect_ =
     this->declare_parameter("require_fresh_command_after_reconnect", true);
+  log_serial_commands_ = this->declare_parameter("log_serial_commands", false);
+  telemetry_enabled_ = this->declare_parameter("telemetry_enabled", false);
+  telemetry_poll_period_ms_ = this->declare_parameter("telemetry_poll_period_ms", 200);
+  telemetry_query_timeout_ms_ = this->declare_parameter("telemetry_query_timeout_ms", 50);
+  telemetry_stale_after_ms_ = this->declare_parameter("telemetry_stale_after_ms", 1000);
 
   update_parameters();
   const auto error = roboteq_ros2_driver::parameter_validation::validate_then_start(
@@ -359,6 +385,11 @@ void Roboteq::update_parameters()
   this->get_parameter(
     "require_fresh_command_after_reconnect",
     require_fresh_command_after_reconnect_);
+  this->get_parameter("log_serial_commands", log_serial_commands_);
+  this->get_parameter("telemetry_enabled", telemetry_enabled_);
+  this->get_parameter("telemetry_poll_period_ms", telemetry_poll_period_ms_);
+  this->get_parameter("telemetry_query_timeout_ms", telemetry_query_timeout_ms_);
+  this->get_parameter("telemetry_stale_after_ms", telemetry_stale_after_ms_);
 }
 
 roboteq_ros2_driver::parameter_validation::DriverParameters
@@ -393,6 +424,10 @@ Roboteq::validation_parameters() const
     channel_2,
     encoder_freshness_warn_s_,
     encoder_freshness_error_s_,
+    telemetry_enabled_,
+    telemetry_poll_period_ms_,
+    telemetry_query_timeout_ms_,
+    telemetry_stale_after_ms_,
   };
 }
 
@@ -633,6 +668,10 @@ void Roboteq::diagnostics_loop()
   state.serial_ready = worker_status.ready_for_motion;
   state.encoder_sample_available = worker_status.have_encoder_sample;
   state.worker_status = worker_status;
+  state.motor_telemetry_enabled = telemetry_enabled_;
+  if (telemetry_enabled_) {
+    state.motor_telemetry = serial_worker_->latestMotorTelemetry();
+  }
   if (worker_status.have_encoder_sample) {
     const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - worker_status.latest_encoder_timestamp);
@@ -705,12 +744,35 @@ void Roboteq::start_serial_worker()
   worker_config.reconnect_interval = std::chrono::milliseconds(
     static_cast<int>(serial_reconnect_interval_s_ * 1000.0));
   worker_config.require_fresh_command_after_reconnect = require_fresh_command_after_reconnect_;
+  worker_config.telemetry_enabled = telemetry_enabled_;
+  worker_config.telemetry_poll_period = std::chrono::milliseconds(telemetry_poll_period_ms_);
+  worker_config.telemetry_query_timeout = std::chrono::milliseconds(telemetry_query_timeout_ms_);
+  worker_config.telemetry_stale_after = std::chrono::milliseconds(telemetry_stale_after_ms_);
   worker_config.required_settings =
     roboteq_ros2_driver::configuration::required_controller_settings(
     open_loop, encoder_eppr, max_amps, max_rpm);
   worker_config.log_callback = [logger = this->get_logger()](const std::string & message) {
       RCLCPP_WARN(logger, "%s", message.c_str());
     };
+  if (log_serial_commands_) {
+    worker_config.serial_command_log_observer =
+      [logger = this->get_logger()](
+      const roboteq_ros2_driver::SerialCommandLogEvent & event) {
+        std::ostringstream commands;
+        for (std::size_t index = 0; index < event.commands.size(); ++index) {
+          if (index > 0) {
+            commands << " | ";
+          }
+          commands << visible_serial_command(event.commands[index]);
+        }
+        std::ostringstream line;
+        line << "ROBOTEQ_SERIAL_TX | sequence=" << event.command_sequence
+             << " generation=" << event.connection_generation
+             << " count=" << event.commands.size()
+             << " commands=\"" << commands.str() << "\"";
+        RCLCPP_INFO(logger, "%s", line.str().c_str());
+      };
+  }
   serial_worker_ = std::make_unique<roboteq_ros2_driver::SerialIoWorker>(
     std::make_unique<roboteq_ros2_driver::RoboteqSerialTransport>(transport_config),
     worker_config);
