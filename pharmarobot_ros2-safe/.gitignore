@@ -13,3 +13,12 @@ backups/
 **/.pytest_cache/
 *.bak
 **/validation_evidenceclear/
+
+# Local editor
+.vscode/
+
+# Generated odometry artifacts
+odometry-validation-*.tar.gz
+src/odometry_validation/covariance_characterization_evidence/
+src/odometry_validation/pre_edit_backups/
+src/odometry_validation/reprocessed_evidence/
