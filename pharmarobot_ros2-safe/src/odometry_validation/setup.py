@@ -40,6 +40,11 @@ setup(
     entry_points={
         "console_scripts": [
             "odometry_validation = odometry_validation.node:main",
+            "odometry_square_validation = odometry_validation.square_trial:main",
+            "odometry_square_reprocess = odometry_validation.square_reprocess:main",
+            "odometry_square_stop_reprocess = "
+            "odometry_validation.square_stop_reprocess:main",
+            "teledex_stream_diagnostic = odometry_validation.teledex_stream_diagnostic:main",
         ],
     },
 )

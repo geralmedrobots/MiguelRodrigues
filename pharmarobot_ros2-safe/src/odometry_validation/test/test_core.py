@@ -33,6 +33,7 @@ from odometry_validation.core import EvidenceWriter
 from odometry_validation.core import GeometryConfig
 from odometry_validation.core import ImuSample
 from odometry_validation.core import InteractiveLimits
+from odometry_validation.core import InteractiveCampaignMenu
 from odometry_validation.core import InteractiveTrialMenu
 from odometry_validation.core import OperatorInterface
 from odometry_validation.core import OdomSample
@@ -61,8 +62,18 @@ from odometry_validation.core import run_trial_until_accepted
 from odometry_validation.core import run_with_emergency_stop
 from odometry_validation.core import wheel_tick_measurements
 from odometry_validation.core import odometry_yaw_change
+from odometry_validation.core import odometry_trajectory_metrics
 from odometry_validation.core import percentage_error
 from odometry_validation.core import render_trial_report
+from odometry_validation.core import render_campaign_tables
+from odometry_validation.core import real_angle_reference_comparison
+from odometry_validation.core import real_reference_comparison
+from odometry_validation.core import translation_heading_comparison
+from odometry_validation.core import translation_distance_reference_comparison
+from odometry_validation.core import teledex_campaign_analysis
+from odometry_validation.core import laser_rotation_reference
+from odometry_validation.core import laser_translation_reference
+from odometry_validation.core import apply_laser_translation_quality
 
 
 class ScriptedInput:
@@ -175,6 +186,113 @@ def test_encoder_distance_supports_explicit_cumulative_counter_contract():
     assert right == pytest.approx(0.2)
     assert distance == pytest.approx(0.2)
     assert angle == pytest.approx(0.0)
+
+
+def test_translation_heading_comparison_reports_signed_errors_in_both_units():
+    comparison = translation_heading_comparison(
+        math.radians(1.2), math.radians(2.0), 1.8)
+
+    assert comparison["compass_heading_rad"] == pytest.approx(math.radians(1.8))
+    assert comparison["encoder"]["rad"] == pytest.approx(math.radians(1.2))
+    assert comparison["encoder"]["deg"] == pytest.approx(1.2)
+    assert comparison["encoder"]["signed_error_vs_compass_deg"] == pytest.approx(-0.6)
+    assert comparison["encoder"]["absolute_error_vs_compass_rad"] == pytest.approx(
+        math.radians(0.6))
+    assert comparison["imu"]["signed_error_vs_compass_rad"] == pytest.approx(
+        math.radians(0.2))
+
+
+def test_real_reference_comparison_uses_absolute_percent_and_zero_reference_na():
+    comparison = real_reference_comparison({"encoder": 1.2}, 1.0)
+    assert comparison["estimators"]["encoder"]["absolute_error"] == pytest.approx(0.2)
+    assert comparison["estimators"]["encoder"]["percentage_error"] == pytest.approx(20.0)
+    assert real_reference_comparison({"encoder": 0.1}, 0.0)["estimators"][
+        "encoder"]["percentage_error"] is None
+
+
+@pytest.mark.parametrize(
+    "raw_reference, estimator",
+    ((1.46, 1.493176), (-1.46, 1.493176), (-1.46, -1.46)))
+def test_translation_distance_reference_uses_magnitudes(
+        raw_reference, estimator):
+    comparison = translation_distance_reference_comparison(
+        {"encoder": estimator}, raw_reference)
+
+    expected_error = abs(estimator) - abs(raw_reference)
+    assert comparison["raw_reference_m"] == raw_reference
+    assert comparison["reference_distance_magnitude_m"] == pytest.approx(1.46)
+    assert comparison["estimators"]["encoder"]["signed_error"] == pytest.approx(
+        expected_error)
+    assert comparison["estimators"]["encoder"]["absolute_error"] == pytest.approx(
+        abs(expected_error))
+    assert comparison["estimators"]["encoder"]["percentage_error"] == pytest.approx(
+        abs(expected_error) / 1.46 * 100.0)
+
+
+def test_real_rotation_reference_comparison_preserves_signed_cw_ccw_errors():
+    comparison = real_angle_reference_comparison(
+        {"encoder": math.radians(-18.0), "imu": math.radians(22.0)},
+        math.radians(-20.0))
+    assert comparison["estimators"]["encoder"]["signed_error_deg"] == pytest.approx(2.0)
+    assert comparison["estimators"]["encoder"]["absolute_error_rad"] == pytest.approx(
+        math.radians(2.0))
+    assert comparison["estimators"]["imu"]["signed_error_deg"] == pytest.approx(42.0)
+
+
+@pytest.mark.parametrize("direction", ("forward", "backward"))
+def test_translation_report_contains_heading_comparison_for_both_directions(direction):
+    spec = TrialSpec(f"trans-{direction}", "translation", 0.3, 3.0, direction)
+    measurements = TrialMeasurements(
+        encoder_distance_m=0.9,
+        encoder_angle_rad=math.radians(1.2),
+        left_wheel_distance_m=0.89,
+        right_wheel_distance_m=0.91,
+        odometry_distance_m=0.9,
+        odometry_angle_rad=math.radians(1.1),
+        imu_angle_rad=math.radians(2.0),
+        physical_measurement=0.9,
+        commanded_distance_m=0.9,
+        commanded_angle_rad=0.0)
+    result = make_trial_result(
+        spec, measurements,
+        manual_reference={"final_heading_deviation_deg": 1.8})
+
+    report = build_trial_report(result, TrialSamples(), GeometryConfig(0.1, 0.5, 100))
+
+    heading = report["translation_heading_comparison"]
+    assert heading["compass_heading_deg"] == pytest.approx(1.8)
+    assert heading["imu"]["deg"] == pytest.approx(2.0)
+    rendered = render_trial_report(report)
+    assert "TRANSLATION HEADING COMPARISON" in rendered
+    assert "Encoder estimate:" in rendered
+    assert "IMU estimate:" in rendered
+
+
+def test_translation_report_shows_magnitude_reference_for_negative_wall_measurement():
+    spec = TrialSpec("trans-backward", "translation", 0.3, 3.0, "backward")
+    measurements = TrialMeasurements(
+        encoder_distance_m=1.493176,
+        encoder_angle_rad=0.0,
+        left_wheel_distance_m=1.493176,
+        right_wheel_distance_m=1.493176,
+        odometry_distance_m=1.493176,
+        odometry_angle_rad=0.0,
+        imu_angle_rad=0.0,
+        physical_measurement=-1.46,
+        commanded_distance_m=1.5,
+        commanded_angle_rad=0.0)
+    result = make_trial_result(
+        spec, measurements,
+        manual_reference={"final_heading_deviation_deg": 0.0})
+
+    report = build_trial_report(result, TrialSamples(), GeometryConfig(0.1, 0.5, 100))
+
+    assert report["physical_reference"]["raw_manual_physical_reference_m"] == pytest.approx(-1.46)
+    assert report["error_vs_real_translation"][
+        "reference_distance_magnitude_m"] == pytest.approx(1.46)
+    assert report["error_vs_real_translation"]["estimators"]["encoder"][
+        "absolute_error"] == pytest.approx(0.033176)
+    assert "raw: -1.46 m" in render_trial_report(report)
 
 
 def test_imu_integration_is_timestamp_aware_and_bias_corrected():
@@ -399,10 +517,52 @@ def test_rotation_report_captures_complete_interval_and_schema():
     assert report["imu"]["total_integration_interval_s"] == pytest.approx(3.0)
     assert report["imu"]["total_physical_motion_angle_rad"] == pytest.approx(1.5)
     assert report["summary_comparison"]["imu"]["value"] == pytest.approx(1.5)
+    assert report["error_vs_real_rotation"]["estimators"]["encoder"][
+        "absolute_error_deg"] == pytest.approx(
+            math.degrees(abs(1.0 - math.radians(40.0))))
+    assert report["error_vs_real_rotation"]["estimators"]["encoder"][
+        "percentage_error"] == pytest.approx(
+            abs(1.0 - math.radians(40.0)) / math.radians(40.0) * 100.0)
+    assert "ERROR VS REAL ROTATION" in render_trial_report(report)
     assert report["imu"]["source_topic"] == "/imu/data"
     assert report["imu"]["total_sample_count"] == 3
     assert "Encoder-based Rotation" in render_trial_report(report)
     assert "Summary Comparison" in render_trial_report(report)
+
+
+def test_teledex_report_uses_arkit_not_compass_terminology():
+    geometry = GeometryConfig(0.1, 0.5, 100)
+    spec = TrialSpec("rot-001-ccw", "rotation", 0.2, 1.0, "ccw")
+    measurements = TrialMeasurements(
+        encoder_distance_m=0.0,
+        encoder_angle_rad=0.19,
+        left_wheel_distance_m=-0.05,
+        right_wheel_distance_m=0.05,
+        odometry_distance_m=0.0,
+        odometry_angle_rad=0.18,
+        imu_angle_rad=0.17,
+        physical_measurement=0.16,
+        commanded_distance_m=0.0,
+        commanded_angle_rad=0.2,
+        teledex_yaw_drift_rad=0.16)
+    result = make_trial_result(spec, measurements, teledex={
+        "final_yaw_unwrapped_rad": 0.16,
+        "phone_to_base_rotation": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                                   0.0, -1.0, 0.0],
+        "phone_to_base_translation_m": [0.0, 0.0, 0.0],
+        "discontinuities_observed": 0,
+    })
+
+    rendered = render_trial_report(
+        build_trial_report(result, TrialSamples(), geometry))
+
+    assert "## TeleDex / ARKit Physical Reference" in rendered
+    assert "teledex_arkit" in rendered
+    assert "compass" not in rendered.lower()
+    assert "## Encoder-based Rotation" in rendered
+    assert "## Odometry Result" in rendered
+    assert "## IMU-based Heading" in rendered
+    assert "## Theoretical Command" in rendered
 
 
 def test_valid_trial_writes_matching_markdown_and_json_reports(tmp_path):
@@ -563,6 +723,72 @@ def test_translation_menu_retries_outside_configured_ranges():
     assert any("within" in item for item in source.notifications)
 
 
+def test_campaign_menu_selects_confirmed_translation_and_toggles_direction():
+    source = ScriptedInput(("1", "1", "0.1", "2", "yes", "3", "yes"))
+    menu = InteractiveCampaignMenu(
+        source, InteractiveLimits(0.5, 10.0, 0.1, 1.0, 2.0, 10.0), lambda _text: None)
+
+    initial = menu.choose_initial()
+    next_spec = menu.choose_next(initial, 2)
+
+    assert initial.direction == "forward"
+    assert initial.velocity == pytest.approx(0.1)
+    assert next_spec.direction == "backward"
+
+
+def test_odometry_trajectory_metrics_preserve_curved_path_and_lateral_drift():
+    path, lateral, yaw = odometry_trajectory_metrics((
+        OdomSample(1.0, 0.0, 0.0, 0.0),
+        OdomSample(2.0, 1.0, 0.0, 0.1),
+        OdomSample(3.0, 1.0, 1.0, 0.2),
+    ))
+
+    assert path == pytest.approx(2.0)
+    assert lateral == pytest.approx(1.0)
+    assert yaw == pytest.approx(0.2)
+
+
+def test_campaign_analysis_excludes_invalid_trials_and_selects_best_estimator():
+    spec = TrialSpec("line-001-forward", "translation", 0.5, 2.0, "forward")
+    measurements = TrialMeasurements(
+        encoder_distance_m=1.1, encoder_angle_rad=0.0,
+        left_wheel_distance_m=1.1, right_wheel_distance_m=1.1,
+        odometry_distance_m=0.98, odometry_angle_rad=0.0, imu_angle_rad=0.0,
+        physical_measurement=1.0, commanded_distance_m=1.0, commanded_angle_rad=0.0,
+        odometry_path_length_m=1.02, teledex_path_length_m=1.0,
+        teledex_forward_displacement_m=1.0)
+    valid = make_trial_result(spec, measurements, valid=True, teledex={"active": True})
+    invalid = make_trial_result(spec, measurements, valid=False, teledex={"active": True})
+
+    group = teledex_campaign_analysis((valid, invalid))["forward_translation"]
+
+    assert group["valid_trial_count"] == 1
+    assert group["best_estimator"]["name"] == "theoretical_signed_displacement"
+
+
+def test_translation_teledex_comparisons_keep_signed_displacement_separate_from_path():
+    """A backward run must never compare a negative distance to an unsigned path."""
+    spec = TrialSpec("line-001-backward", "translation", 0.4, 3.0, "backward")
+    measurements = TrialMeasurements(
+        encoder_distance_m=-1.24, encoder_angle_rad=0.0,
+        left_wheel_distance_m=-1.24, right_wheel_distance_m=-1.24,
+        odometry_distance_m=-1.23, odometry_angle_rad=0.0, imu_angle_rad=0.0,
+        physical_measurement=-1.26, commanded_distance_m=-1.2, commanded_angle_rad=0.0,
+        odometry_path_length_m=1.27, teledex_path_length_m=1.273,
+        teledex_forward_displacement_m=-1.261)
+    result = make_trial_result(spec, measurements, valid=True, teledex={"active": True})
+
+    analysis = teledex_campaign_analysis((result,))["backward_translation"]
+    signed = analysis["estimators"]["encoder_signed_displacement"]
+    path = analysis["estimators"]["odometry_path_length"]
+    table = render_campaign_tables((result,))
+
+    assert signed["mean_absolute_error"] == pytest.approx(0.021)
+    assert path["mean_absolute_error"] == pytest.approx(0.003)
+    assert "command signed m (err %)" in table
+    assert "TeleDex net forward m" in table
+
+
 def test_menu_rejects_rotation_duration_doubling_past_safe_limit():
     source = ScriptedInput(("2", "5"))
     menu = InteractiveTrialMenu(
@@ -677,6 +903,137 @@ def test_residual_movement_settles_before_controlled_stop_timeout():
     assert record["time_from_first_zero_to_stationary_s"] >= 0.0
     assert record["timeout_reason"] is None
     assert records == [record]
+
+
+def test_stop_record_reports_safe_zero_propagation_time_separately_from_settling():
+    clock = FakeClock()
+    safe_zero = iter((False, True))
+    stationary = iter((False, True))
+    controller = EmergencyStopController(
+        publish_zero=lambda: None,
+        verify_safe_zero=lambda: next(safe_zero),
+        verify_stationary=lambda: next(stationary),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    record = controller.stop(timeout_s=1.0, rate_hz=10.0, mode="controlled")
+
+    assert record["time_from_first_zero_to_safe_zero_verification_s"] == pytest.approx(0.2)
+    assert record["time_from_first_zero_to_stationary_s"] == pytest.approx(0.2)
+
+
+def test_safe_zero_confirmation_is_latched_during_repeated_zero_publication():
+    clock = FakeClock()
+    safe_zero = iter((True, False))
+    stationary = iter((False, True))
+    controller = EmergencyStopController(
+        publish_zero=lambda: None,
+        verify_safe_zero=lambda: next(safe_zero),
+        verify_stationary=lambda: next(stationary),
+        sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    record = controller.stop(timeout_s=1.0, rate_hz=10.0, mode="controlled")
+
+    assert record["safe_zero"]
+    assert record["stationary"]
+    assert record["time_from_first_zero_to_safe_zero_verification_s"] == pytest.approx(
+        0.1)
+
+
+def test_delayed_fresh_safe_zero_is_latched_after_callback_arrives():
+    clock = FakeClock()
+    safe_zero = iter((False, True))
+    controller = EmergencyStopController(
+        publish_zero=lambda: None,
+        verify_safe_zero=lambda: next(safe_zero),
+        verify_stationary=lambda: True,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    record = controller.stop(timeout_s=1.0, rate_hz=10.0, mode="controlled")
+
+    assert record["safe_zero"]
+    assert record["zero_publish_count"] == 2
+    assert record["time_from_first_zero_to_safe_zero_verification_s"] == pytest.approx(
+        0.2)
+
+
+def test_stop_controller_does_not_reuse_safe_zero_latch_across_stops():
+    clock = FakeClock()
+    safe_state = [True]
+    controller = EmergencyStopController(
+        publish_zero=lambda: None,
+        verify_safe_zero=lambda: safe_state[0],
+        verify_stationary=lambda: True,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    assert controller.stop(0.2, 10.0)["safe_zero"]
+    safe_state[0] = False
+    with pytest.raises(EmergencyStopError) as captured:
+        controller.stop(0.2, 10.0)
+    assert not captured.value.record["safe_zero"]
+
+
+def test_stop_diagnostics_report_sensor_milestones_and_full_stationarity():
+    clock = FakeClock()
+    assessments = iter((
+        StationarityAssessment(
+            stationary=False, reason="encoder motion", required_delta_samples=5,
+            observed_delta_samples=5, tick_delta_tolerance=0,
+            linear_velocity_tolerance_m_s=0.01,
+            angular_velocity_tolerance_rad_s=0.02,
+            first_zero_timestamp_s=100.0, wheel_tick_semantics="delta",
+            safe_zero=True, tick_deltas_stationary=False,
+            odom_twist_stationary=True, assessment_timestamp_s=100.8,
+            first_safe_zero_timestamp_s=100.05,
+            first_odom_stationary_timestamp_s=100.8,
+            last_encoder_motion_timestamp_s=100.7,
+            last_nonzero_odom_twist_timestamp_s=100.6),
+        StationarityAssessment(
+            stationary=True, reason="stationary", required_delta_samples=5,
+            observed_delta_samples=5, tick_delta_tolerance=0,
+            linear_velocity_tolerance_m_s=0.01,
+            angular_velocity_tolerance_rad_s=0.02,
+            first_zero_timestamp_s=100.0, wheel_tick_semantics="delta",
+            safe_zero=True, tick_deltas_stationary=True,
+            odom_twist_stationary=True, assessment_timestamp_s=101.5,
+            first_safe_zero_timestamp_s=100.05,
+            first_encoder_stationary_timestamp_s=101.5,
+            first_odom_stationary_timestamp_s=100.8,
+            last_encoder_motion_timestamp_s=100.7,
+            last_nonzero_odom_twist_timestamp_s=100.6)))
+    controller = EmergencyStopController(
+        publish_zero=lambda: None, verify_safe_zero=lambda: True,
+        verify_stationary=lambda: next(assessments), sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    record = controller.stop(3.0, 10.0, mode="controlled")
+
+    assert record["first_zero_command_timestamp_s"] == 100.0
+    assert record["first_fresh_safe_zero_timestamp_s"] == 100.05
+    assert record["safe_zero_latency_s"] == pytest.approx(0.05)
+    assert record["first_odom_stationary_timestamp_s"] == 100.8
+    assert record["first_encoder_stationary_timestamp_s"] == 101.5
+    assert record["last_encoder_motion_timestamp_s"] == 100.7
+    assert record["last_nonzero_odom_twist_timestamp_s"] == 100.6
+    assert record["full_stationarity_timestamp_s"] == 101.5
+    assert record["time_to_full_stationarity_s"] == pytest.approx(1.5)
+
+
+def test_encoder_settling_over_one_second_can_pass_within_measured_bound():
+    clock = FakeClock()
+    stationary = iter([False] * 16 + [True])
+    controller = EmergencyStopController(
+        publish_zero=lambda: None, verify_safe_zero=lambda: True,
+        verify_stationary=lambda: next(stationary), sleep=clock.sleep,
+        monotonic=clock.monotonic)
+
+    record = controller.stop(3.0, 10.0, mode="emergency_cleanup")
+
+    assert record["stationary"]
+    assert record["time_from_first_zero_to_stationary_s"] == pytest.approx(1.7)
 
 
 def test_movement_that_never_settles_fails_only_at_timeout():
@@ -1093,6 +1450,31 @@ def test_evidence_records_ignored_diagnostic_names_and_samples(tmp_path):
         encoding="utf-8").count(ignored_name) == 1
 
 
+def test_resumed_evidence_uses_current_cli_ignored_diagnostic_metadata(tmp_path):
+    writer = EvidenceWriter(tmp_path)
+    campaign_dir = writer.create({"ignored_diagnostic_names": []})
+    resumed = EvidenceWriter(tmp_path)
+    ignored_names = [
+        "roboteq/channel_1_telemetry",
+        "roboteq/channel_2_telemetry",
+    ]
+
+    resumed.open_existing(
+        campaign_dir,
+        metadata_override={"ignored_diagnostic_names": ignored_names})
+
+    report = resumed._report_text([], [])
+    resume_metadata = list(campaign_dir.glob("resume-metadata-*.json"))
+    original_metadata = json.loads(
+        (campaign_dir / "metadata.json").read_text(encoding="utf-8"))
+    resumed_metadata = json.loads(
+        resume_metadata[0].read_text(encoding="utf-8"))
+    assert original_metadata["ignored_diagnostic_names"] == []
+    assert resumed_metadata["ignored_diagnostic_names"] == ignored_names
+    assert "roboteq/channel_1_telemetry" in report
+    assert "roboteq/channel_2_telemetry" in report
+
+
 def test_failure_evidence_records_raw_samples_stationarity_and_thresholds(
         tmp_path):
     stationarity_sample = StationaritySample(
@@ -1270,3 +1652,83 @@ def test_second_cleanup_request_is_recorded_without_repeating_stop():
     assert calls == ["stop"]
     assert second == {"already_attempted": True}
     assert cleanup.second_interrupt is True
+
+
+def test_laser_translation_forward_left_wall_and_signed_endpoint():
+    reference = laser_translation_reference(
+        "forward", 2.0, 1.0, 1.0, 0.8, "left")
+    assert reference.dx_m == pytest.approx(1.0)
+    assert reference.dy_m == pytest.approx(0.2)
+    assert reference.endpoint_displacement_m == pytest.approx(math.hypot(1.0, 0.2))
+    assert reference.signed_displacement_m > 0.0
+
+
+def test_laser_translation_backward_right_wall_and_zero_lateral_drift():
+    reference = laser_translation_reference(
+        "backward", 1.0, 2.0, 0.8, 0.8, "right")
+    assert reference.dx_m == pytest.approx(-1.0)
+    assert reference.dy_m == pytest.approx(0.0)
+    assert reference.signed_displacement_m == pytest.approx(-1.0)
+
+
+@pytest.mark.parametrize("values", ((0.0, 1.0, 1.0, 1.0), (-1.0, 1.0, 1.0, 1.0)))
+def test_laser_translation_rejects_invalid_distances(values):
+    with pytest.raises(ValidationError, match="finite and positive"):
+        laser_translation_reference("forward", *values, "left")
+
+
+def test_laser_translation_quality_rejects_lateral_and_yaw_drift():
+    reference = laser_translation_reference("forward", 2.0, 1.0, 1.0, 0.8, "left")
+    rejected = apply_laser_translation_quality(
+        reference, 0.1, math.radians(1.0), math.radians(2.0), "IMU quality aid")
+    assert not rejected.quality_passed
+    assert "lateral drift" in rejected.quality_rejection_reason
+    assert "yaw quality aid" in rejected.quality_rejection_reason
+
+
+def test_laser_rotation_offset_geometry_has_ccw_cw_and_zero_roots():
+    x_l, y_l = 0.41, 0.0
+    initial = 2.0
+    theta = math.radians(30.0)
+    final = (initial + x_l) / math.cos(theta) - x_l
+    ccw = laser_rotation_reference("ccw", initial, final, (x_l, y_l, 0.29))
+    cw = laser_rotation_reference("cw", initial, final, (x_l, y_l, 0.29))
+    zero = laser_rotation_reference("ccw", initial, initial, (x_l, y_l, 0.29))
+    assert ccw.angle_rad == pytest.approx(theta)
+    assert cw.angle_rad == pytest.approx(-theta)
+    assert zero.angle_rad == pytest.approx(0.0)
+
+
+def test_laser_rotation_uses_configured_front_laser_beam_yaw():
+    # Active front laser origin is +X but its optical axis is approximately -X.
+    along = -0.41
+    theta = math.radians(20.0)
+    final = (2.0 + along) / math.cos(theta) - along
+    reference = laser_rotation_reference(
+        "ccw", 2.0, final, (0.41, 0.0, 0.29), math.pi)
+    assert reference.angle_rad == pytest.approx(theta)
+
+
+def test_laser_rotation_rejects_impossible_acos_geometry():
+    with pytest.raises(ValidationError, match="impossible"):
+        laser_rotation_reference("ccw", 3.0, 1.0, (0.0, 0.0, 0.29))
+
+
+def test_laser_translation_report_preserves_raw_values_and_endpoint_not_path():
+    geometry = GeometryConfig(0.1, 0.5, 100)
+    spec = TrialSpec("trans-001-forward", "translation", 0.2, 5.0, "forward")
+    measurements = TrialMeasurements(
+        encoder_distance_m=0.98, encoder_angle_rad=0.0,
+        left_wheel_distance_m=0.98, right_wheel_distance_m=0.98,
+        odometry_distance_m=0.99, odometry_angle_rad=0.0, imu_angle_rad=0.0,
+        physical_measurement=1.0, commanded_distance_m=1.0, commanded_angle_rad=0.0)
+    laser = apply_laser_translation_quality(
+        laser_translation_reference("forward", 2.0, 1.0, 1.0, 1.0, "left"),
+        0.05, math.radians(1.0), 0.0, "IMU quality aid")
+    report = build_trial_report(
+        make_trial_result(spec, measurements, laser=asdict(laser)), TrialSamples(), geometry)
+
+    assert report["laser_reference"]["initial_longitudinal_distance_m"] == 2.0
+    assert report["laser_reference"]["endpoint_displacement_m"] == 1.0
+    assert report["laser_comparison"]["encoder"]["signed_error"] == pytest.approx(-0.02)
+    assert "endpoint displacement is not travelled path length" in render_trial_report(report)

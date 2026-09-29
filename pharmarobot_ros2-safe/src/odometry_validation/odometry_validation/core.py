@@ -233,6 +233,36 @@ class StationarityAssessment:
     odom_samples: Tuple[OdomSample, ...] = ()
     assessment_timestamp_s: Optional[float] = None
     elapsed_since_first_zero_s: Optional[float] = None
+    first_safe_zero_timestamp_s: Optional[float] = None
+    time_from_first_zero_to_safe_zero_s: Optional[float] = None
+    max_abs_left_delta_ticks: Optional[int] = None
+    max_abs_right_delta_ticks: Optional[int] = None
+    max_abs_odom_linear_x_m_s: Optional[float] = None
+    max_abs_odom_angular_z_rad_s: Optional[float] = None
+    first_encoder_stationary_timestamp_s: Optional[float] = None
+    first_odom_stationary_timestamp_s: Optional[float] = None
+    last_encoder_motion_timestamp_s: Optional[float] = None
+    last_nonzero_odom_twist_timestamp_s: Optional[float] = None
+    safe_command_fresh: bool = False
+    safe_command_age_s: Optional[float] = None
+    encoder_window_duration_s: Optional[float] = None
+    encoder_window_start_timestamp_s: Optional[float] = None
+    encoder_window_end_timestamp_s: Optional[float] = None
+    left_net_ticks: Optional[int] = None
+    right_net_ticks: Optional[int] = None
+    left_absolute_ticks: Optional[int] = None
+    right_absolute_ticks: Optional[int] = None
+    left_net_displacement_mm: Optional[float] = None
+    right_net_displacement_mm: Optional[float] = None
+    left_absolute_displacement_mm: Optional[float] = None
+    right_absolute_displacement_mm: Optional[float] = None
+    maximum_individual_delta_ticks: Optional[int] = None
+    left_directional_accumulation_ticks: Optional[int] = None
+    right_directional_accumulation_ticks: Optional[int] = None
+    encoder_activity_class: Optional[str] = None
+    encoder_window_acceptance_reason: Optional[str] = None
+    encoder_data_fresh: bool = False
+    encoder_data_valid: bool = False
 
 
 @dataclass(frozen=True)
@@ -345,6 +375,38 @@ class TrialMeasurements:
     imu_start_boundary_gap_s: Optional[float] = None
     imu_command_end_boundary_gap_s: Optional[float] = None
     imu_stationary_boundary_gap_s: Optional[float] = None
+    odometry_path_length_m: Optional[float] = None
+    odometry_lateral_displacement_m: Optional[float] = None
+    odometry_yaw_drift_rad: Optional[float] = None
+    teledex_path_length_m: Optional[float] = None
+    teledex_forward_displacement_m: Optional[float] = None
+    teledex_lateral_displacement_m: Optional[float] = None
+    teledex_yaw_drift_rad: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class LaserReference:
+    """Raw wall readings and derived, endpoint-only laser reference values."""
+
+    arrangement: str
+    side_wall: Optional[str]
+    initial_longitudinal_distance_m: Optional[float] = None
+    final_longitudinal_distance_m: Optional[float] = None
+    initial_side_distance_m: Optional[float] = None
+    final_side_distance_m: Optional[float] = None
+    initial_rotation_distance_m: Optional[float] = None
+    final_rotation_distance_m: Optional[float] = None
+    dx_m: Optional[float] = None
+    dy_m: Optional[float] = None
+    endpoint_displacement_m: Optional[float] = None
+    signed_displacement_m: Optional[float] = None
+    angle_rad: Optional[float] = None
+    laser_origin_base_m: Optional[Tuple[float, float, float]] = None
+    laser_beam_yaw_rad: Optional[float] = None
+    quality_passed: bool = False
+    quality_rejection_reason: Optional[str] = None
+    yaw_quality_aid: Optional[str] = None
+    yaw_drift_rad: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -360,6 +422,9 @@ class TrialResult:
     evidence_dir: Optional[str] = None
     initial_compass_heading_deg: Optional[float] = None
     final_compass_heading_deg: Optional[float] = None
+    manual_reference: Optional[Dict[str, object]] = None
+    teledex: Optional[Dict[str, object]] = None
+    laser: Optional[Dict[str, object]] = None
 
 
 def utc_timestamp() -> str:
@@ -513,6 +578,23 @@ def odometry_signed_displacement(
         (last.y_m - first.y_m) * math.sin(first.yaw_rad))
 
 
+def odometry_trajectory_metrics(
+        samples: Sequence[OdomSample]) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return path length, endpoint lateral displacement, and unwrapped yaw."""
+    if len(samples) < 2:
+        return None, None, None
+    ordered = tuple(sorted(samples, key=lambda sample: sample.timestamp_s))
+    path_length = sum(
+        math.hypot(current.x_m - previous.x_m, current.y_m - previous.y_m)
+        for previous, current in zip(ordered, ordered[1:]))
+    first = ordered[0]
+    last = ordered[-1]
+    lateral = (
+        -(last.x_m - first.x_m) * math.sin(first.yaw_rad) +
+        (last.y_m - first.y_m) * math.cos(first.yaw_rad))
+    return path_length, lateral, odometry_yaw_change(ordered)
+
+
 def odometry_yaw_change(samples: Sequence[OdomSample]) -> Optional[float]:
     """Unwrap every yaw increment across the complete odometry interval."""
     if len(samples) < 2:
@@ -654,6 +736,94 @@ def percentage_error(value: Optional[float], reference: Optional[float]) -> Opti
     return 100.0 * (value - reference) / abs(reference)
 
 
+def laser_translation_reference(
+        direction: str, initial_longitudinal_m: float, final_longitudinal_m: float,
+        initial_side_m: float, final_side_m: float, side_wall: str) -> LaserReference:
+    """Derive an endpoint reference in ROS +X forward, +Y left coordinates."""
+    values = (initial_longitudinal_m, final_longitudinal_m,
+              initial_side_m, final_side_m)
+    if not all(math.isfinite(value) and value > 0.0 for value in values):
+        raise ValidationError("laser wall distances must be finite and positive")
+    if direction not in ("forward", "backward"):
+        raise ValidationError("laser translation direction must be forward or backward")
+    side = side_wall.lower()
+    if side not in ("left", "right"):
+        raise ValidationError("laser side wall must be left or right")
+    dx = initial_longitudinal_m - final_longitudinal_m
+    dy = (initial_side_m - final_side_m if side == "left" else
+          final_side_m - initial_side_m)
+    endpoint = math.hypot(dx, dy)
+    signed = endpoint if direction == "forward" else -endpoint
+    return LaserReference(
+        arrangement="longitudinal_and_side_walls", side_wall=side,
+        initial_longitudinal_distance_m=initial_longitudinal_m,
+        final_longitudinal_distance_m=final_longitudinal_m,
+        initial_side_distance_m=initial_side_m, final_side_distance_m=final_side_m,
+        dx_m=dx, dy_m=dy, endpoint_displacement_m=endpoint,
+        signed_displacement_m=signed)
+
+
+def laser_rotation_reference(
+        direction: str, initial_distance_m: float, final_distance_m: float,
+        laser_origin_base_m: Tuple[float, float, float],
+        laser_beam_yaw_rad: float = 0.0) -> LaserReference:
+    """Solve the explicit offset-laser / initially normal-wall geometry.
+
+    For laser origin ``(x_l, y_l)`` the measured final range obeys
+    ``(d_f+x_l) cos(theta) - y_l sin(theta) = d_i+x_l``.  The commanded
+    direction selects the physically admissible signed root nearest zero.
+    """
+    if direction not in ("cw", "ccw"):
+        raise ValidationError("laser rotation direction must be cw or ccw")
+    if (len(laser_origin_base_m) != 3 or
+            not all(math.isfinite(value) for value in laser_origin_base_m)):
+        raise ValidationError("laser origin in base_link must contain three finite values")
+    if not math.isfinite(laser_beam_yaw_rad):
+        raise ValidationError("laser beam yaw must be finite")
+    if (not math.isfinite(initial_distance_m) or not math.isfinite(final_distance_m) or
+            initial_distance_m <= 0.0 or final_distance_m <= 0.0):
+        raise ValidationError("laser rotation wall distances must be finite and positive")
+    x_l, y_l, _z_l = laser_origin_base_m
+    # Express the lever arm in the initially wall-normal laser-beam basis.
+    along = x_l * math.cos(laser_beam_yaw_rad) + y_l * math.sin(laser_beam_yaw_rad)
+    left = -x_l * math.sin(laser_beam_yaw_rad) + y_l * math.cos(laser_beam_yaw_rad)
+    a, b, c = final_distance_m + along, -left, initial_distance_m + along
+    radius = math.hypot(a, b)
+    if radius <= 1e-12 or abs(c) > radius + 1e-9:
+        raise ValidationError("laser rotation geometry is impossible")
+    ratio = max(-1.0, min(1.0, c / radius))
+    phase = math.atan2(b, a)
+    roots = (phase + math.acos(ratio), phase - math.acos(ratio))
+    signed = [root for root in roots if (root >= -1e-9 if direction == "ccw" else root <= 1e-9)]
+    if not signed:
+        raise ValidationError("laser rotation geometry has no root for commanded direction")
+    angle = min(signed, key=abs)
+    return LaserReference(
+        arrangement="initially_normal_flat_wall", side_wall=None,
+        initial_rotation_distance_m=initial_distance_m,
+        final_rotation_distance_m=final_distance_m, angle_rad=angle,
+        laser_origin_base_m=tuple(laser_origin_base_m),
+        laser_beam_yaw_rad=laser_beam_yaw_rad, quality_passed=True)
+
+
+def apply_laser_translation_quality(
+        reference: LaserReference, max_lateral_drift_m: float,
+        max_yaw_drift_rad: float, yaw_drift_rad: Optional[float],
+        yaw_quality_aid: str) -> LaserReference:
+    """Reject non-straight endpoint trials without treating estimator yaw as truth."""
+    if reference.dx_m is None or reference.dy_m is None:
+        raise ValidationError("laser translation reference is incomplete")
+    reasons = []
+    if abs(reference.dy_m) > max_lateral_drift_m:
+        reasons.append("laser lateral drift exceeded quality limit")
+    if yaw_drift_rad is not None and abs(yaw_drift_rad) > max_yaw_drift_rad:
+        reasons.append("yaw quality aid exceeded drift limit")
+    return LaserReference(**dict(asdict(reference), quality_passed=not reasons,
+                                 quality_rejection_reason="; ".join(reasons) or None,
+                                 yaw_quality_aid=yaw_quality_aid,
+                                 yaw_drift_rad=yaw_drift_rad))
+
+
 def _comparison_entry(
         value: Optional[float], reference: Optional[float]) -> Dict[str, Optional[float]]:
     if value is None or reference is None:
@@ -672,6 +842,101 @@ def _comparison_entry(
     }
 
 
+def real_reference_comparison(
+        values: Dict[str, Optional[float]],
+        reference: Optional[float]) -> Dict[str, object]:
+    """Compare estimators with a measured reference using absolute percent error."""
+    def entry(value: Optional[float]) -> Dict[str, Optional[float]]:
+        signed = None if value is None or reference is None else value - reference
+        return {
+            "value": value,
+            "signed_error": signed,
+            "absolute_error": None if signed is None else abs(signed),
+            "percentage_error": (
+                None if signed is None or abs(reference) <= 1e-12 else
+                abs(signed) / abs(reference) * 100.0),
+        }
+
+    return {
+        "reference": reference,
+        "percentage_error_zero_reference": abs(reference or 0.0) <= 1e-12,
+        "estimators": {name: entry(value) for name, value in values.items()},
+    }
+
+
+def real_angle_reference_comparison(
+        values: Dict[str, Optional[float]],
+        reference_rad: Optional[float]) -> Dict[str, object]:
+    """Return measured-angle comparison values in radians and degrees."""
+    comparison = real_reference_comparison(values, reference_rad)
+    estimators = {}
+    for name, entry in comparison["estimators"].items():
+        estimators[name] = {
+            "value_rad": entry["value"],
+            "value_deg": _degrees_or_none(entry["value"]),
+            "signed_error_rad": entry["signed_error"],
+            "signed_error_deg": _degrees_or_none(entry["signed_error"]),
+            "absolute_error_rad": entry["absolute_error"],
+            "absolute_error_deg": _degrees_or_none(entry["absolute_error"]),
+            "percentage_error": entry["percentage_error"],
+        }
+    return {
+        "reference_rad": reference_rad,
+        "reference_deg": _degrees_or_none(reference_rad),
+        "percentage_error_zero_reference": (
+            comparison["percentage_error_zero_reference"]),
+        "estimators": estimators,
+    }
+
+
+def translation_distance_reference_comparison(
+        values: Dict[str, Optional[float]],
+        raw_reference_m: Optional[float]) -> Dict[str, object]:
+    """Compare translation distances by magnitude while retaining raw reference."""
+    reference_m = None if raw_reference_m is None else abs(raw_reference_m)
+    comparison = real_reference_comparison(
+        {
+            name: None if value is None else abs(value)
+            for name, value in values.items()},
+        reference_m)
+    comparison["raw_reference_m"] = raw_reference_m
+    comparison["reference_distance_magnitude_m"] = reference_m
+    return comparison
+
+
+def _teledex_comparisons(
+        spec: TrialSpec,
+        measurements: TrialMeasurements) -> Dict[str, Dict[str, Optional[float]]]:
+    """Compare like-for-like quantities against the TeleDex reference only."""
+    if spec.movement_type == "rotation":
+        reference = measurements.teledex_yaw_drift_rad
+        values = {
+            "theoretical": measurements.commanded_angle_rad,
+            "encoder": measurements.encoder_angle_rad,
+            "odometry": measurements.odometry_angle_rad,
+            "imu": measurements.imu_angle_rad,
+        }
+    else:
+        signed_reference = measurements.teledex_forward_displacement_m
+        path_reference = measurements.teledex_path_length_m
+        values = {
+            "theoretical_signed_displacement": (
+                measurements.commanded_distance_m, signed_reference),
+            "encoder_signed_displacement": (
+                measurements.encoder_distance_m, signed_reference),
+            "odometry_signed_displacement": (
+                measurements.odometry_distance_m, signed_reference),
+            "odometry_path_length": (
+                measurements.odometry_path_length_m, path_reference),
+        }
+        return {
+            name: _comparison_entry(value, reference)
+            for name, (value, reference) in values.items()}
+    return {
+        name: _comparison_entry(value, reference)
+        for name, value in values.items()}
+
+
 def _interval_s(start_s: Optional[float], end_s: Optional[float]) -> Optional[float]:
     """Return a finite ordered interval or None when its boundaries are absent."""
     if start_s is None or end_s is None:
@@ -682,6 +947,46 @@ def _interval_s(start_s: Optional[float], end_s: Optional[float]) -> Optional[fl
 def _degrees_or_none(value: Optional[float]) -> Optional[float]:
     """Convert an optional radians value to degrees."""
     return None if value is None else math.degrees(value)
+
+
+def translation_heading_comparison(
+        encoder_heading_rad: Optional[float],
+        imu_heading_rad: Optional[float],
+        compass_heading_deg: Optional[float],
+        odometry_heading_rad: Optional[float] = None) -> Dict[str, object]:
+    """Compare translation yaw estimates with the signed manual deviation."""
+    compass_rad = (
+        None if compass_heading_deg is None else math.radians(compass_heading_deg))
+
+    def values(heading_rad: Optional[float]) -> Dict[str, Optional[float]]:
+        signed_error_rad = (
+            None if heading_rad is None or compass_rad is None else
+            heading_rad - compass_rad)
+        return {
+            "rad": heading_rad,
+            "deg": _degrees_or_none(heading_rad),
+            "signed_error_vs_compass_rad": signed_error_rad,
+            "signed_error_vs_compass_deg": _degrees_or_none(signed_error_rad),
+            "absolute_error_vs_compass_rad": (
+                None if signed_error_rad is None else abs(signed_error_rad)),
+            "absolute_error_vs_compass_deg": (
+                None if signed_error_rad is None else
+                abs(math.degrees(signed_error_rad))),
+            "percentage_error_vs_compass": (
+                None if signed_error_rad is None or abs(compass_rad) <= 1e-12 else
+                abs(signed_error_rad) / abs(compass_rad) * 100.0),
+        }
+
+    return {
+        "compass_heading_deg": compass_heading_deg,
+        "compass_heading_rad": compass_rad,
+        "encoder": values(encoder_heading_rad),
+        "imu": values(imu_heading_rad),
+        "odometry": values(odometry_heading_rad),
+        "sign_convention": (
+            "positive is ROS counter-clockwise; manual translation heading is "
+            "the signed deviation from the initial 0 degree perpendicular heading"),
+    }
 
 
 def _validate_report_values(value: object, path: str = "report") -> None:
@@ -703,6 +1008,10 @@ def _validate_report_values(value: object, path: str = "report") -> None:
             _validate_report_values(nested, f"{path}[{index}]")
         return
     raise ValidationError(f"{path} contains unsupported value type {type(value).__name__}")
+
+
+def _display_report_number(value: Optional[float]) -> str:
+    return "N/A" if value is None else f"{value:.9g}"
 
 
 def build_trial_report(
@@ -735,6 +1044,10 @@ def build_trial_report(
             "imu_count": len(samples.imu),
         },
     }
+    physical_reference_label = (
+        "teledex_arkit" if result.teledex is not None else
+        "laser" if result.laser is not None else
+        "manual_physical_reference")
     if spec.movement_type == "rotation":
         expected_angle = measurements.commanded_angle_rad
         physical_angle = measurements.physical_measurement
@@ -761,7 +1074,7 @@ def build_trial_report(
                     "minus left wheel distance divided by track width"),
                 "error_vs_theoretical_rad": (
                     measurements.encoder_angle_rad - expected_angle),
-                "error_vs_compass_rad": (
+                "error_vs_physical_reference_rad": (
                     None if physical_angle is None else
                     measurements.encoder_angle_rad - physical_angle),
             },
@@ -775,7 +1088,7 @@ def build_trial_report(
                 "error_vs_theoretical_rad": (
                     None if measurements.odometry_angle_rad is None else
                     measurements.odometry_angle_rad - expected_angle),
-                "error_vs_compass_rad": (
+                "error_vs_physical_reference_rad": (
                     None if measurements.odometry_angle_rad is None or
                     physical_angle is None else
                     measurements.odometry_angle_rad - physical_angle),
@@ -824,29 +1137,75 @@ def build_trial_report(
                 "final_relative_heading_rad": (
                     None if imu_end is None else imu_end.integrated_angle_rad),
                 "error_vs_theoretical_rad": measurements.imu_angle_rad - expected_angle,
-                "error_vs_compass_rad": (
+                "error_vs_physical_reference_rad": (
                     None if physical_angle is None else
                     measurements.imu_angle_rad - physical_angle),
             },
             "physical_reference": {
                 "initial_compass_heading_deg": result.initial_compass_heading_deg,
                 "final_compass_heading_deg": result.final_compass_heading_deg,
+                "manual_reference": result.manual_reference,
                 "wrapped_physical_angle_deg": (
                     None if physical_angle is None else math.degrees(physical_angle)),
                 "angle_rad": physical_angle,
             },
+            "teledex_reference": result.teledex,
+            "laser_reference": result.laser,
+            "teledex_comparison": _teledex_comparisons(spec, measurements),
             "summary_comparison": {
                 "theoretical": _comparison_entry(expected_angle, expected_angle),
                 "encoder": _comparison_entry(measurements.encoder_angle_rad, expected_angle),
                 "odometry": _comparison_entry(measurements.odometry_angle_rad, expected_angle),
                 "imu": _comparison_entry(measurements.imu_angle_rad, expected_angle),
-                "physical_compass": _comparison_entry(physical_angle, expected_angle),
+                physical_reference_label: _comparison_entry(
+                    physical_angle, expected_angle),
             },
         })
+        report["error_vs_real_rotation"] = real_angle_reference_comparison(
+            {
+                "encoder": measurements.encoder_angle_rad,
+                "odometry": measurements.odometry_angle_rad,
+                "imu": measurements.imu_angle_rad,
+            }, physical_angle)
+        report["manual_reference_error_fields"] = {
+            f"{name}_{suffix}": value
+            for name, estimator in report["error_vs_real_rotation"]["estimators"].items()
+            for suffix, value in (
+                ("error_vs_manual_reference_rad", estimator["signed_error_rad"]),
+                ("error_vs_manual_reference_deg", estimator["signed_error_deg"]),
+                ("absolute_error_vs_manual_reference_rad", estimator["absolute_error_rad"]),
+                ("absolute_error_vs_manual_reference_deg", estimator["absolute_error_deg"]),
+                ("percent_error_vs_manual_reference", estimator["percentage_error"]),
+            )}
+        if result.laser is not None and result.laser.get("quality_passed"):
+            if physical_angle is not None and abs(physical_angle) > 1e-12:
+                report["laser_candidate_corrections"] = {
+                    "status": (
+                        "candidate only; requires repeated-trial statistics; "
+                        "not applied"),
+                    "track_width_scale_from_encoder": (
+                        measurements.encoder_angle_rad / physical_angle),
+                    "track_width_scale_from_odometry": (
+                        None if measurements.odometry_angle_rad is None else
+                        measurements.odometry_angle_rad / physical_angle),
+                }
         _validate_report_values(report)
         return report
 
     expected_distance = measurements.commanded_distance_m
+    compass_heading_deg = (
+        None if result.manual_reference is None else
+        result.manual_reference.get("final_heading_deviation_deg"))
+    heading_comparison = translation_heading_comparison(
+        measurements.encoder_angle_rad,
+        measurements.imu_angle_rad,
+        compass_heading_deg,
+        measurements.odometry_yaw_drift_rad)
+    heading_comparison.update({
+        "track_width_m": geometry.track_width_m,
+        "encoder_formula": (
+            "(right_wheel_distance_m - left_wheel_distance_m) / track_width_m"),
+    })
     report.update({
         "theoretical": {
             "expected_displacement_m": expected_distance,
@@ -861,10 +1220,40 @@ def build_trial_report(
         },
         "odometry": {
             "displacement_m": measurements.odometry_distance_m,
+            "path_length_m": measurements.odometry_path_length_m,
+            "lateral_displacement_m": measurements.odometry_lateral_displacement_m,
+            "yaw_drift_rad": measurements.odometry_yaw_drift_rad,
+            "yaw_drift_deg": _degrees_or_none(measurements.odometry_yaw_drift_rad),
         },
         "physical_reference": {
             "displacement_m": measurements.physical_measurement,
+            "raw_manual_physical_reference_m": measurements.physical_measurement,
+            "reference_distance_magnitude_m": (
+                None if measurements.physical_measurement is None else
+                abs(measurements.physical_measurement)),
+            "manual_reference": result.manual_reference,
         },
+        "translation_heading_comparison": heading_comparison,
+        "error_vs_real_translation": translation_distance_reference_comparison(
+            {
+                "theoretical": expected_distance,
+                "encoder": measurements.encoder_distance_m,
+                "odometry": measurements.odometry_distance_m,
+            }, measurements.physical_measurement),
+        "manual_reference_error_fields": {},
+        "teledex_reference": result.teledex,
+        "laser_reference": result.laser,
+        "translation_drift": {
+            "teledex_lateral_displacement_m": measurements.teledex_lateral_displacement_m,
+            "teledex_yaw_drift_rad": measurements.teledex_yaw_drift_rad,
+            "teledex_yaw_drift_deg": _degrees_or_none(measurements.teledex_yaw_drift_rad),
+            "odometry_lateral_displacement_m": measurements.odometry_lateral_displacement_m,
+            "odometry_yaw_drift_rad": measurements.odometry_yaw_drift_rad,
+            "odometry_yaw_drift_deg": _degrees_or_none(measurements.odometry_yaw_drift_rad),
+            "encoder_yaw_estimate_rad": measurements.encoder_angle_rad,
+            "imu_yaw_drift_rad": measurements.imu_angle_rad,
+        },
+        "teledex_comparison": _teledex_comparisons(spec, measurements),
         "summary_comparison": {
             "theoretical": _comparison_entry(expected_distance, expected_distance),
             "encoder": _comparison_entry(
@@ -875,6 +1264,53 @@ def build_trial_report(
                 measurements.physical_measurement, expected_distance),
         },
     })
+    report["summary_comparison"][physical_reference_label] = (
+        report["summary_comparison"].pop("physical"))
+    real_translation = report["error_vs_real_translation"]
+    fields = report["manual_reference_error_fields"]
+    for name, estimator in real_translation["estimators"].items():
+        fields.update({
+            f"{name}_error_vs_manual_reference_m": estimator["signed_error"],
+            f"{name}_absolute_error_vs_manual_reference_m": estimator[
+                "absolute_error"],
+            f"{name}_percent_error_vs_manual_reference": estimator[
+                "percentage_error"],
+        })
+    for name, estimator in report["translation_heading_comparison"].items():
+        if name not in ("encoder", "imu", "odometry"):
+            continue
+        fields.update({
+            f"{name}_heading_error_vs_manual_reference_rad": estimator[
+                "signed_error_vs_compass_rad"],
+            f"{name}_heading_error_vs_manual_reference_deg": estimator[
+                "signed_error_vs_compass_deg"],
+            f"{name}_absolute_heading_error_vs_manual_reference_rad": estimator[
+                "absolute_error_vs_compass_rad"],
+            f"{name}_absolute_heading_error_vs_manual_reference_deg": estimator[
+                "absolute_error_vs_compass_deg"],
+            f"{name}_percent_heading_error_vs_manual_reference": estimator[
+                "percentage_error_vs_compass"],
+        })
+    if result.laser is not None:
+        laser = result.laser
+        reference = laser["signed_displacement_m"]
+        report["laser_comparison"] = {
+            "theoretical": _comparison_entry(expected_distance, reference),
+            "encoder": _comparison_entry(measurements.encoder_distance_m, reference),
+            "odometry": _comparison_entry(measurements.odometry_distance_m, reference),
+        }
+        if laser.get("quality_passed") and reference is not None and abs(reference) > 1e-12:
+            report["laser_candidate_corrections"] = {
+                "status": "candidate only; requires repeated-trial statistics; not applied",
+                "wheel_radius_scale_from_encoder": (
+                    None if measurements.encoder_distance_m is None or
+                    abs(measurements.encoder_distance_m) <= 1e-12 else
+                    reference / measurements.encoder_distance_m),
+                "wheel_radius_scale_from_odometry": (
+                    None if measurements.odometry_distance_m is None or
+                    abs(measurements.odometry_distance_m) <= 1e-12 else
+                    reference / measurements.odometry_distance_m),
+            }
     _validate_report_values(report)
     return report
 
@@ -899,8 +1335,6 @@ def render_trial_report(report: Dict[str, object]) -> str:
             "", "## Theoretical Command", "",
             f"- expected_angle_rad: {theoretical['expected_angle_rad']}",
             f"- expected_angle_deg: {theoretical['expected_angle_deg']}",
-            "- expected_final_compass_heading_deg: "
-            f"{theoretical['expected_final_compass_heading_deg']}",
             "", "## Encoder-based Rotation", "",
             f"- left_tick_total: {encoder['left_tick_total']}",
             f"- right_tick_total: {encoder['right_tick_total']}",
@@ -911,14 +1345,16 @@ def render_trial_report(report: Dict[str, object]) -> str:
             f"- angle_deg: {encoder['angle_deg']}",
             f"- sign_convention: {encoder['sign_convention']}",
             f"- error_vs_theoretical_rad: {encoder['error_vs_theoretical_rad']}",
-            f"- error_vs_compass_rad: {encoder['error_vs_compass_rad']}",
+            "- error_vs_physical_reference_rad: "
+            f"{encoder['error_vs_physical_reference_rad']}",
             "", "## Odometry Result", "",
             f"- initial_yaw_rad: {odometry['initial_yaw_rad']}",
             f"- final_yaw_rad: {odometry['final_yaw_rad']}",
             f"- unwrapped_angle_rad: {odometry['unwrapped_angle_rad']}",
             f"- unwrapped_angle_deg: {odometry['unwrapped_angle_deg']}",
             f"- error_vs_theoretical_rad: {odometry['error_vs_theoretical_rad']}",
-            f"- error_vs_compass_rad: {odometry['error_vs_compass_rad']}",
+            "- error_vs_physical_reference_rad: "
+            f"{odometry['error_vs_physical_reference_rad']}",
             "", "## IMU-based Heading", "",
             f"- gyro_bias_rad_s: {imu['gyro_bias_rad_s']}",
             f"- source_topic: {imu['source_topic']}",
@@ -946,17 +1382,79 @@ def render_trial_report(report: Dict[str, object]) -> str:
             f"- initial_relative_heading_rad: {imu['initial_relative_heading_rad']}",
             f"- final_relative_heading_rad: {imu['final_relative_heading_rad']}",
             f"- error_vs_theoretical_rad: {imu['error_vs_theoretical_rad']}",
-            f"- error_vs_compass_rad: {imu['error_vs_compass_rad']}",
-            "", "## Physical Reference", "",
-            f"- initial_compass_heading_deg: {physical['initial_compass_heading_deg']}",
-            f"- final_compass_heading_deg: {physical['final_compass_heading_deg']}",
-            f"- wrapped_physical_angle_deg: {physical['wrapped_physical_angle_deg']}",
+            "- error_vs_physical_reference_rad: "
+            f"{imu['error_vs_physical_reference_rad']}",
         ])
+        if report["teledex_reference"] is None:
+            lines.extend(["", "## Manual Physical Reference", ""])
+            if physical["initial_compass_heading_deg"] is not None:
+                lines.extend([
+                    "- measurement_type: manual compass heading",
+                    "- expected_final_compass_heading_deg: "
+                    f"{theoretical['expected_final_compass_heading_deg']}",
+                    "- initial_compass_heading_deg: "
+                    f"{physical['initial_compass_heading_deg']}",
+                    "- final_compass_heading_deg: "
+                    f"{physical['final_compass_heading_deg']}",
+                ])
+            else:
+                lines.append("- measurement_type: manual rotation angle")
+            lines.extend([
+                f"- measured_rotation_rad: {physical['angle_rad']}",
+                "- measured_rotation_deg: "
+                f"{physical['wrapped_physical_angle_deg']}",
+            ])
+        if report.get("laser_reference") is not None:
+            laser = report["laser_reference"]
+            lines.extend([
+                "", "## Laser Physical Reference", "",
+                f"- initial_distance_m: {laser['initial_rotation_distance_m']}",
+                f"- final_distance_m: {laser['final_rotation_distance_m']}",
+                f"- angle_rad: {laser['angle_rad']}",
+                f"- angle_deg: {_degrees_or_none(laser['angle_rad'])}",
+                f"- laser_origin_base_m: {laser['laser_origin_base_m']}",
+            ])
+        if report["teledex_reference"] is not None:
+            teledex = report["teledex_reference"]
+            lines.extend([
+                "", "## TeleDex / ARKit Physical Reference", "",
+                f"- final_yaw_rad: {teledex['final_yaw_unwrapped_rad']}",
+                f"- final_yaw_deg: {_degrees_or_none(teledex['final_yaw_unwrapped_rad'])}",
+                "- base_axis_convention: +X forward, +Y left, +Z up, "
+                "positive yaw counter-clockwise",
+                "- phone_to_base_rotation: "
+                f"{teledex['phone_to_base_rotation']}",
+                "- phone_to_base_translation_m: "
+                f"{teledex['phone_to_base_translation_m']}",
+                f"- trajectory_discontinuities: {teledex['discontinuities_observed']}",
+            ])
+        real = report["error_vs_real_rotation"]
+        lines.extend([
+            "", "ERROR VS REAL ROTATION", "",
+            f"Manual physical reference: {_display_report_number(real['reference_rad'])} rad "
+            f"({_display_report_number(real['reference_deg'])} deg)",
+            "| estimator | value rad | value deg | signed error rad | "
+            "signed error deg | abs error rad | abs error deg | percent error |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for name in ("encoder", "odometry", "imu"):
+            estimator = real["estimators"][name]
+            lines.append(
+                f"| {name} | {_display_report_number(estimator['value_rad'])} | "
+                f"{_display_report_number(estimator['value_deg'])} | "
+                f"{_display_report_number(estimator['signed_error_rad'])} | "
+                f"{_display_report_number(estimator['signed_error_deg'])} | "
+                f"{_display_report_number(estimator['absolute_error_rad'])} | "
+                f"{_display_report_number(estimator['absolute_error_deg'])} | "
+                f"{_display_report_number(estimator['percentage_error'])} |")
     else:
         theoretical = report["theoretical"]
         encoder = report["encoder"]
         odometry = report["odometry"]
         physical = report["physical_reference"]
+        heading = report["translation_heading_comparison"]
+        encoder_heading = heading["encoder"]
+        imu_heading = heading["imu"]
         lines.extend([
             "", "## Theoretical Command", "",
             f"- expected_displacement_m: {theoretical['expected_displacement_m']}",
@@ -966,19 +1464,99 @@ def render_trial_report(report: Dict[str, object]) -> str:
             f"- left_distance_m: {encoder['left_distance_m']}",
             f"- right_distance_m: {encoder['right_distance_m']}",
             f"- mean_distance_m: {encoder['mean_distance_m']}",
+            "", "TRANSLATION HEADING COMPARISON", "",
+            "Sign convention: positive is ROS counter-clockwise; manual heading "
+            "is the signed deviation from initial 0 degree heading.",
+            f"Compass reference: {heading['compass_heading_deg']} deg "
+            f"({heading['compass_heading_rad']} rad)",
+            f"Encoder estimate: {encoder_heading['deg']} deg "
+            f"({encoder_heading['rad']} rad) "
+            f"error: "
+            f"{encoder_heading['signed_error_vs_compass_deg']} deg",
+            f"IMU estimate: {imu_heading['deg']} deg "
+            f"({imu_heading['rad']} rad) "
+            f"error: "
+            f"{imu_heading['signed_error_vs_compass_deg']} deg",
             "", "## Odometry Result", "",
             f"- displacement_m: {odometry['displacement_m']}",
-            "", "## Physical Reference", "",
-            f"- displacement_m: {physical['displacement_m']}",
         ])
+        if report["teledex_reference"] is None:
+            lines.extend([
+                "", "## Manual Physical Reference", "",
+                f"- displacement_m: {physical['displacement_m']}",
+            ])
+        if report.get("laser_reference") is not None:
+            laser = report["laser_reference"]
+            lines.extend([
+                "", "## Laser Physical Reference", "",
+                f"- longitudinal_displacement_dx_m: {laser['dx_m']}",
+                f"- lateral_displacement_dy_m: {laser['dy_m']}",
+                f"- endpoint_displacement_d_xy_m: {laser['endpoint_displacement_m']}",
+                f"- signed_reference_displacement_m: {laser['signed_displacement_m']}",
+                "- endpoint displacement is not travelled path length",
+                f"- quality_passed: {laser['quality_passed']}",
+                f"- quality_rejection_reason: {laser['quality_rejection_reason']}",
+                f"- yaw_quality_aid: {laser['yaw_quality_aid']}",
+            ])
+        if report["teledex_reference"] is not None:
+            teledex = report["teledex_reference"]
+            drift = report["translation_drift"]
+            lines.extend([
+                "", "## TeleDex / ARKit Physical Reference", "",
+                f"- travelled_path_length_m: {teledex['total_planar_path_length_m']}",
+                f"- net_forward_displacement_m: {teledex['net_forward_displacement_m']}",
+                f"- lateral_displacement_m: {teledex['lateral_displacement_m']}",
+                f"- final_yaw_deg: {_degrees_or_none(teledex['final_yaw_unwrapped_rad'])}",
+                "", "## Drift Comparison", "",
+                f"- TeleDex lateral drift m: {drift['teledex_lateral_displacement_m']}",
+                f"- TeleDex yaw drift deg: {drift['teledex_yaw_drift_deg']}",
+                f"- odometry lateral drift m: {drift['odometry_lateral_displacement_m']}",
+                f"- odometry yaw drift deg: {drift['odometry_yaw_drift_deg']}",
+                f"- encoder yaw estimate rad: {drift['encoder_yaw_estimate_rad']}",
+                f"- IMU yaw drift rad: {drift['imu_yaw_drift_rad']}",
+            ])
+        real = report["error_vs_real_translation"]
+        lines.extend([
+            "", "ERROR VS REAL TRANSLATION", "",
+            f"Manual physical reference magnitude: "
+            f"{_display_report_number(real['reference_distance_magnitude_m'])} m "
+            f"(raw: {_display_report_number(real['raw_reference_m'])} m)",
+            "| estimator | value m | signed error m | absolute error m | percent error |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ])
+        for name in ("theoretical", "encoder", "odometry"):
+            estimator = real["estimators"][name]
+            lines.append(
+                f"| {name} | {_display_report_number(estimator['value'])} | "
+                f"{_display_report_number(estimator['signed_error'])} | "
+                f"{_display_report_number(estimator['absolute_error'])} | "
+                f"{_display_report_number(estimator['percentage_error'])} |")
+        heading = report["translation_heading_comparison"]
+        lines.extend([
+            "", "ERROR VS REAL TRANSLATION HEADING", "",
+            f"Manual compass heading: "
+            f"{_display_report_number(heading['compass_heading_rad'])} rad "
+            f"({_display_report_number(heading['compass_heading_deg'])} deg)",
+            "| estimator | value rad | value deg | abs error rad | "
+            "abs error deg | percent error |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for name in ("encoder", "imu", "odometry"):
+            estimator = heading[name]
+            lines.append(
+                f"| {name} | {_display_report_number(estimator['rad'])} | "
+                f"{_display_report_number(estimator['deg'])} | "
+                f"{_display_report_number(estimator['absolute_error_vs_compass_rad'])} | "
+                f"{_display_report_number(estimator['absolute_error_vs_compass_deg'])} | "
+                f"{_display_report_number(estimator['percentage_error_vs_compass'])} |")
     lines.extend([
         "", "## Summary Comparison", "",
         "| estimator | value | signed error | absolute error | percent error |",
         "| --- | ---: | ---: | ---: | ---: |",
     ])
     comparison_names = (
-        "theoretical", "encoder", "odometry", "imu", "physical_compass",
-        "physical")
+        "theoretical", "encoder", "odometry", "imu", "teledex_arkit",
+        "manual_physical_reference", "laser")
     comparisons = report["summary_comparison"]
     for name in (
             [name for name in comparison_names if name in comparisons] +
@@ -987,6 +1565,27 @@ def render_trial_report(report: Dict[str, object]) -> str:
         lines.append(
             "| {name} | {value} | {signed_error} | {absolute_error} | {percentage_error} |".format(
                 name=name, **comparison))
+    if report.get("teledex_comparison"):
+        lines.extend([
+            "", "## Error vs TeleDex", "",
+            "| estimator | value | signed error | absolute error | percent error |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ])
+        for name, comparison in sorted(report["teledex_comparison"].items()):
+            lines.append(
+                "| {name} | {value} | {signed_error} | {absolute_error} | "
+                "{percentage_error} |".format(
+                    name=name, **comparison))
+    if report.get("laser_comparison"):
+        lines.extend([
+            "", "## Error vs Laser", "",
+            "| estimator | value | signed error | absolute error | percent error |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ])
+        for name, comparison in sorted(report["laser_comparison"].items()):
+            lines.append(
+                "| {name} | {value} | {signed_error} | {absolute_error} | "
+                "{percentage_error} |".format(name=name, **comparison))
     lines.extend(["", "## Operator", ""])
     for key in sorted(report["operator"]):
         lines.append(f"- {key}: {report['operator'][key]}")
@@ -1019,12 +1618,14 @@ def build_measurements(
         command_end_timestamp_s: Optional[float] = None,
         stationary_confirmation_timestamp_s: Optional[float] = None,
         imu_source_topic: str = PRIMARY_IMU_SOURCE_TOPIC,
-        imu_boundary_tolerance_s: Optional[float] = None
+        imu_boundary_tolerance_s: Optional[float] = None,
+        teledex_result: Optional[object] = None
         ) -> Tuple[TrialMeasurements, TrialSamples]:
     """Compute all validator-side measurements for one trial."""
     encoder = wheel_tick_measurements(
         samples.wheel_ticks, geometry, wheel_tick_semantics)
     odom_distance, odom_angle = odometry_measurements(samples.odom)
+    odom_path, odom_lateral, odom_yaw = odometry_trajectory_metrics(samples.odom)
     if spec.movement_type == "translation":
         odom_distance = odometry_signed_displacement(samples.odom)
     if (
@@ -1121,7 +1722,22 @@ def build_measurements(
                 command_end_timestamp_s)),
         imu_stationary_boundary_gap_s=(
             None if not total_imu else stationary_confirmation_timestamp_s -
-            max(sample.timestamp_s for sample in total_imu)))
+            max(sample.timestamp_s for sample in total_imu)),
+        odometry_path_length_m=odom_path,
+        odometry_lateral_displacement_m=odom_lateral,
+        odometry_yaw_drift_rad=odom_yaw,
+        teledex_path_length_m=(
+            None if teledex_result is None else
+            teledex_result.total_planar_path_length_m),
+        teledex_forward_displacement_m=(
+            None if teledex_result is None else
+            teledex_result.net_forward_displacement_m),
+        teledex_lateral_displacement_m=(
+            None if teledex_result is None else
+            teledex_result.lateral_displacement_m),
+        teledex_yaw_drift_rad=(
+            None if teledex_result is None else
+            teledex_result.final_yaw_unwrapped_rad))
     return measurements, enriched_samples
 
 
@@ -1138,10 +1754,16 @@ def comparison_values(
             "physical": measurements.physical_measurement,
         }
     return {
-        "commanded": measurements.commanded_distance_m,
-        "encoder": measurements.encoder_distance_m,
-        "odometry": measurements.odometry_distance_m,
-        "physical": measurements.physical_measurement,
+        "commanded": abs(measurements.commanded_distance_m),
+        "encoder": (
+            None if measurements.encoder_distance_m is None else
+            abs(measurements.encoder_distance_m)),
+        "odometry": (
+            None if measurements.odometry_distance_m is None else
+            abs(measurements.odometry_distance_m)),
+        "physical": (
+            None if measurements.physical_measurement is None else
+            abs(measurements.physical_measurement)),
     }
 
 
@@ -1174,6 +1796,180 @@ def summarize_results(results: Sequence[TrialResult]) -> List[Dict[str, object]]
     return summary
 
 
+def teledex_campaign_analysis(results: Sequence[TrialResult]) -> Dict[str, object]:
+    """Group valid like-for-like estimator errors against TeleDex only."""
+    groups = {
+        "cw_rotation": [], "ccw_rotation": [],
+        "forward_translation": [], "backward_translation": [],
+    }
+    for result in results:
+        if not result.valid or result.skipped or result.teledex is None:
+            continue
+        key = result.spec.direction + (
+            "_translation" if result.spec.movement_type == "translation" else "_rotation")
+        if key not in groups:
+            continue
+        measurements = result.measurements
+        if result.spec.movement_type == "rotation":
+            reference = measurements.teledex_yaw_drift_rad
+            if reference is None:
+                continue
+            values = {
+                "theoretical": (measurements.commanded_angle_rad, reference),
+                "encoder": (measurements.encoder_angle_rad, reference),
+                "odometry": (measurements.odometry_angle_rad, reference),
+                "imu": (measurements.imu_angle_rad, reference),
+            }
+        else:
+            values = {
+                "theoretical_signed_displacement": (
+                    measurements.commanded_distance_m,
+                    measurements.teledex_forward_displacement_m),
+                "encoder_signed_displacement": (
+                    measurements.encoder_distance_m,
+                    measurements.teledex_forward_displacement_m),
+                "odometry_signed_displacement": (
+                    measurements.odometry_distance_m,
+                    measurements.teledex_forward_displacement_m),
+                "odometry_path_length": (
+                    measurements.odometry_path_length_m,
+                    measurements.teledex_path_length_m),
+            }
+            if not any(reference is not None for _value, reference in values.values()):
+                continue
+        groups[key].append((result, values))
+    groups["all_rotation"] = (
+        groups["cw_rotation"] + groups["ccw_rotation"])
+    groups["all_translation"] = (
+        groups["forward_translation"] + groups["backward_translation"])
+
+    output = {}
+    for group, rows in groups.items():
+        estimator_errors: Dict[str, List[float]] = {}
+        estimator_percentages: Dict[str, List[float]] = {}
+        for _result, values in rows:
+            for estimator, (value, reference) in values.items():
+                if value is None or reference is None:
+                    continue
+                error = value - reference
+                estimator_errors.setdefault(estimator, []).append(error)
+                percent = percentage_error(value, reference)
+                if percent is not None:
+                    estimator_percentages.setdefault(estimator, []).append(percent)
+        statistics_by_estimator = {}
+        for estimator, errors in sorted(estimator_errors.items()):
+            absolute = [abs(error) for error in errors]
+            percentages = estimator_percentages.get(estimator, [])
+            statistics_by_estimator[estimator] = {
+                "count": len(errors),
+                "mean_absolute_error": statistics.mean(absolute),
+                "mean_percentage_error": (
+                    None if not percentages else statistics.mean(percentages)),
+                "stddev": statistics.pstdev(errors) if len(errors) > 1 else 0.0,
+                "rmse": math.sqrt(statistics.mean(error * error for error in errors)),
+                "minimum_error": min(errors),
+                "maximum_error": max(errors),
+            }
+        winner = (
+            min(statistics_by_estimator, key=lambda name:
+                statistics_by_estimator[name]["mean_absolute_error"])
+            if statistics_by_estimator else None)
+        output[group] = {
+            "valid_trial_count": len(rows),
+            "estimators": statistics_by_estimator,
+            "best_estimator": (
+                None if winner is None else {
+                    "name": winner, **statistics_by_estimator[winner]}),
+        }
+    return output
+
+
+def _value_with_teledex_percentage(
+        value: Optional[float], reference: Optional[float], degrees: bool = False) -> str:
+    """Render a value with N/A for mathematically unstable percentages."""
+    if value is None:
+        return "N/A"
+    display_value = math.degrees(value) if degrees else value
+    percent = percentage_error(value, reference)
+    suffix = "N/A" if percent is None else f"{percent:.3g}%"
+    return f"{display_value:.6g} ({suffix})"
+
+
+def render_campaign_tables(results: Sequence[TrialResult]) -> str:
+    """Render the required direction-specific tables without undefined percent values."""
+    groups = (
+        ("CW ROTATION TESTS", "rotation", "cw"),
+        ("CCW ROTATION TESTS", "rotation", "ccw"),
+        ("FORWARD TRANSLATION TESTS", "translation", "forward"),
+        ("BACKWARD TRANSLATION TESTS", "translation", "backward"),
+    )
+    lines = []
+    for heading, movement_type, direction in groups:
+        lines.extend(["## " + heading, ""])
+        selected = [result for result in results if (
+            result.valid and not result.skipped and
+            result.spec.movement_type == movement_type and
+            result.spec.direction == direction)]
+        if movement_type == "rotation":
+            lines.extend([
+                "| ID | w rad/s | time s | command deg (err %) | "
+                "encoder deg (err %) | odometry deg (err %) | "
+                "IMU deg (err %) | TeleDex deg |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ])
+            for result in selected:
+                m = result.measurements
+                reference = m.teledex_yaw_drift_rad
+                lines.append(
+                    "| {0} | {1:.6g} | {2:.6g} | {3} | {4} | {5} | {6} | {7} |".format(
+                        result.spec.trial_id, result.spec.velocity, result.spec.duration_s,
+                        _value_with_teledex_percentage(
+                            m.commanded_angle_rad, reference, True),
+                        _value_with_teledex_percentage(
+                            m.encoder_angle_rad, reference, True),
+                        _value_with_teledex_percentage(
+                            m.odometry_angle_rad, reference, True),
+                        _value_with_teledex_percentage(
+                            m.imu_angle_rad, reference, True),
+                        _degrees_or_none(m.teledex_yaw_drift_rad)))
+        else:
+            lines.extend([
+                "| ID | v m/s | time s | command signed m (err %) | "
+                "encoder signed m (err %) | odom signed m (err %) | "
+                "TeleDex net forward m | odom path m (err %) | TeleDex path m | "
+                "TeleDex lateral m | odom lateral m | "
+                "TeleDex yaw deg | IMU yaw deg |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | "
+                "---: | ---: | ---: | ---: | ---: |",
+            ])
+            for result in selected:
+                m = result.measurements
+                signed_reference = m.teledex_forward_displacement_m
+                path_reference = m.teledex_path_length_m
+                lines.append(
+                    "| {0} | {1:.6g} | {2:.6g} | {3} | {4} | {5} | {6} | {7} | "
+                    "{8} | {9} | {10} | {11} | {12} |".format(
+                        result.spec.trial_id, result.spec.velocity, result.spec.duration_s,
+                        _value_with_teledex_percentage(
+                            m.commanded_distance_m, signed_reference),
+                        _value_with_teledex_percentage(
+                            m.encoder_distance_m, signed_reference),
+                        _value_with_teledex_percentage(
+                            m.odometry_distance_m, signed_reference),
+                        m.teledex_forward_displacement_m,
+                        _value_with_teledex_percentage(
+                            m.odometry_path_length_m, path_reference),
+                        m.teledex_path_length_m,
+                        m.teledex_lateral_displacement_m,
+                        m.odometry_lateral_displacement_m,
+                        _degrees_or_none(m.teledex_yaw_drift_rad),
+                        _degrees_or_none(m.imu_angle_rad)))
+        if not selected:
+            lines.append("No valid trials recorded.")
+        lines.append("")
+    return "\n".join(lines)
+
+
 class EvidenceWriter:
     """Append-only evidence writer for one validation campaign."""
 
@@ -1200,10 +1996,40 @@ class EvidenceWriter:
             return candidate
         raise RuntimeError("could not create unique evidence directory")
 
+    def open_existing(
+            self,
+            directory: Path,
+            metadata_override: Optional[Dict[str, object]] = None) -> Path:
+        """Resume an existing evidence directory without replacing files."""
+        directory = Path(directory)
+        metadata_path = directory / "metadata.json"
+        if not directory.is_dir() or not metadata_path.is_file():
+            raise ValidationError(
+                f"resume evidence directory is incomplete: {directory}")
+        with metadata_path.open("r", encoding="utf-8") as stream:
+            metadata = json.load(stream)
+        if metadata_override is not None:
+            metadata = dict(metadata_override)
+        self.directory = directory
+        self.root = directory.parent
+        self._campaign_metadata = dict(metadata)
+        if metadata_override is not None:
+            self._write_json(directory / f"resume-metadata-{utc_timestamp()}.json", metadata)
+        return directory
+
+    def write_reference_selection(self, reference_mode: str) -> None:
+        """Preserve the interactive choice separately from pre-node CLI metadata."""
+        if self.directory is None:
+            raise RuntimeError("evidence directory has not been created")
+        self._write_json(self.directory / "reference_selection.json", {
+            "reference_mode": reference_mode,
+        })
+
     def write_trial(
             self,
             result: TrialResult,
-            samples: TrialSamples) -> Path:
+            samples: TrialSamples,
+            teledex_trajectory: Sequence[object] = ()) -> Path:
         if self.directory is None:
             raise RuntimeError("evidence directory has not been created")
         report = None
@@ -1232,6 +2058,7 @@ class EvidenceWriter:
             trial_dir / "ignored_diagnostics.csv",
             samples.ignored_diagnostics)
         self._write_csv(trial_dir / "commanded_velocity.csv", samples.commands)
+        self._write_csv(trial_dir / "teledex_pose.csv", teledex_trajectory)
         stationarity_rows = tuple(
             row
             for assessment in samples.stationarity
@@ -1280,8 +2107,38 @@ class EvidenceWriter:
             "skipped_trial_count": sum(1 for result in results if result.skipped),
             "summary": summary,
         })
-        report = self._report_text(results, summary)
+        campaign_analysis = teledex_campaign_analysis(results)
+        campaign_payload = {
+            "total_tests_attempted": len(results),
+            "total_valid_tests": sum(1 for result in results if result.valid),
+            "total_invalid_or_rejected_tests": sum(
+                1 for result in results if not result.valid),
+            "direction_counts": {
+                "cw_rotation": sum(1 for result in results if (
+                    result.spec.movement_type == "rotation" and result.spec.direction == "cw")),
+                "ccw_rotation": sum(1 for result in results if (
+                    result.spec.movement_type == "rotation" and result.spec.direction == "ccw")),
+                "forward_translation": sum(1 for result in results if (
+                    result.spec.movement_type == "translation" and
+                    result.spec.direction == "forward")),
+                "backward_translation": sum(1 for result in results if (
+                    result.spec.movement_type == "translation" and
+                    result.spec.direction == "backward")),
+            },
+            "teledex_statistics": campaign_analysis,
+        }
+        self._write_json(self.directory / "campaign_report.json", campaign_payload)
+        campaign_rows = []
+        for group, group_values in campaign_analysis.items():
+            for estimator, values in group_values["estimators"].items():
+                campaign_rows.append({
+                    "group": group, "estimator": estimator, **values})
+        self._write_table(self.directory / "campaign_summary.csv", campaign_rows)
+        report = (
+            self._report_text(results, summary) + "\n" +
+            render_campaign_tables(results))
         (self.directory / "report.md").write_text(report, encoding="utf-8")
+        (self.directory / "campaign_report.md").write_text(report, encoding="utf-8")
 
     def write_failure(
             self,
@@ -1327,6 +2184,24 @@ class EvidenceWriter:
             self._ignored_diagnostics)
         report = self._report_text(results, summary, failure=str(error))
         (self.directory / "report.md").write_text(report, encoding="utf-8")
+
+    def write_partial_teledex_trajectory(
+            self, trajectory: Sequence[object],
+            stream_diagnostics: Optional[Dict[str, object]] = None) -> None:
+        """Persist reference samples gathered before a fail-closed interruption."""
+        if self.directory is None:
+            raise RuntimeError("evidence directory has not been created")
+        self._write_csv(self.directory / "teledex_partial_pose.csv", trajectory)
+        if stream_diagnostics is not None:
+            self._write_json(
+                self.directory / "teledex_stream_diagnostics.json",
+                stream_diagnostics)
+
+    def write_axis_validation(self, payload: Dict[str, object]) -> None:
+        """Persist the configured/detected phone-frame mapping once per campaign."""
+        if self.directory is None:
+            raise RuntimeError("evidence directory has not been created")
+        self._write_json(self.directory / "teledex_axis_validation.json", payload)
 
     def _write_failure_csv_files(self, samples: TrialSamples) -> None:
         if self.directory is None:
@@ -1479,6 +2354,9 @@ class EvidenceWriter:
             "evidence_dir": result.evidence_dir,
             "initial_compass_heading_deg": result.initial_compass_heading_deg,
             "final_compass_heading_deg": result.final_compass_heading_deg,
+            "manual_reference": result.manual_reference,
+            "teledex": result.teledex,
+            "laser": result.laser,
             "ignored_diagnostic_names": sorted({
                 sample.name for sample in samples.ignored_diagnostics}),
             "ignored_diagnostic_samples": [
@@ -1535,12 +2413,65 @@ class EvidenceWriter:
                     "| {comparison} | {count} | {mean_error:.9g} | "
                     "{stddev:.9g} | {rmse:.9g} | {minimum_error:.9g} | "
                     "{maximum_error:.9g} |".format(**row))
+        lines.extend(["", "## Best Estimator vs TeleDex", ""])
+        for group, values in teledex_campaign_analysis(results).items():
+            winner = values["best_estimator"]
+            if winner is None:
+                lines.append(f"- {group}: N/A (no valid TeleDex reference trials)")
+            else:
+                lines.append(
+                    "- {group}: {name}; mean absolute error="
+                    "{mean_absolute_error:.9g}, mean percentage error="
+                    "{mean_percentage_error}, RMSE={rmse:.9g}, trials={count}".format(
+                        group=group, **winner))
         lines.extend(["", "## Trials", ""])
         for result in results:
             lines.append(
                 f"- {result.spec.trial_id}: valid={result.valid}, "
                 f"skipped={result.skipped}, notes={result.operator_notes}")
         return "\n".join(lines) + "\n"
+
+
+def _stop_timeline_fields(
+        assessments: Sequence[Dict[str, object]]) -> Dict[str, object]:
+    """Summarize stop milestones without weakening any acceptance condition."""
+    def first_value(name):
+        return next(
+            (item.get(name) for item in assessments
+             if item.get(name) is not None), None)
+
+    def last_value(name):
+        values = [
+            item.get(name) for item in assessments
+            if item.get(name) is not None]
+        return None if not values else max(values)
+
+    first_zero_s = first_value("first_zero_timestamp_s")
+    first_safe_zero_s = first_value("first_safe_zero_timestamp_s")
+    first_encoder_stationary_s = first_value(
+        "first_encoder_stationary_timestamp_s")
+    first_odom_stationary_s = first_value(
+        "first_odom_stationary_timestamp_s")
+    full_stationarity_s = next(
+        (item.get("assessment_timestamp_s") for item in assessments
+         if item.get("stationary") is True), None)
+    return {
+        "first_zero_command_timestamp_s": first_zero_s,
+        "first_fresh_safe_zero_timestamp_s": first_safe_zero_s,
+        "safe_zero_latency_s": (
+            None if first_zero_s is None or first_safe_zero_s is None else
+            max(0.0, first_safe_zero_s - first_zero_s)),
+        "first_encoder_stationary_timestamp_s": first_encoder_stationary_s,
+        "first_odom_stationary_timestamp_s": first_odom_stationary_s,
+        "last_encoder_motion_timestamp_s": last_value(
+            "last_encoder_motion_timestamp_s"),
+        "last_nonzero_odom_twist_timestamp_s": last_value(
+            "last_nonzero_odom_twist_timestamp_s"),
+        "full_stationarity_timestamp_s": full_stationarity_s,
+        "time_to_full_stationarity_s": (
+            None if first_zero_s is None or full_stationarity_s is None else
+            max(0.0, full_stationarity_s - first_zero_s)),
+    }
 
 
 class EmergencyStopController:
@@ -1621,7 +2552,9 @@ class EmergencyStopController:
                 "ros_context_valid": context_valid,
                 "zero_publisher_valid": publisher_valid,
                 "timeout_reason": invalid_reason,
+                "timeout_condition": invalid_reason,
             }
+            record.update(_stop_timeline_fields(()))
             if self.record_result is not None:
                 self.record_result(record)
             return record
@@ -1634,6 +2567,7 @@ class EmergencyStopController:
         assessments = []
         first_zero_monotonic = None
         safe_zero = False
+        first_safe_zero_timestamp_s = None
         stationary = None if not require_stationarity else False
         stationarity_result = None
         zero_publish_count = 0
@@ -1660,7 +2594,10 @@ class EmergencyStopController:
                     mode == "controlled" and require_stationarity and
                     self.verify_stop_guards is not None):
                 self.verify_stop_guards()
-            safe_zero = bool(self.verify_safe_zero())
+            current_safe_zero = bool(self.verify_safe_zero())
+            if current_safe_zero and first_safe_zero_timestamp_s is None:
+                first_safe_zero_timestamp_s = self.monotonic()
+            safe_zero = safe_zero or current_safe_zero
             if require_stationarity:
                 stationarity_result = self.verify_stationary()
                 if isinstance(stationarity_result, StationarityAssessment):
@@ -1693,8 +2630,13 @@ class EmergencyStopController:
                         stationarity if require_stationarity else None),
                     "time_from_first_zero_to_stationary_s": (
                         elapsed_s if require_stationarity else None),
+                    "time_from_first_zero_to_safe_zero_verification_s": (
+                        None if first_safe_zero_timestamp_s is None else max(
+                            0.0, first_safe_zero_timestamp_s - first_zero_monotonic)),
                     "timeout_reason": None,
+                    "timeout_condition": None,
                 }
+                record.update(_stop_timeline_fields(assessments))
                 if self.record_result is not None:
                     self.record_result(record)
                 return record
@@ -1720,8 +2662,13 @@ class EmergencyStopController:
             "stationarity_assessments": assessments,
             "final_accepted_window": None,
             "time_from_first_zero_to_stationary_s": None,
+            "time_from_first_zero_to_safe_zero_verification_s": (
+                None if first_safe_zero_timestamp_s is None else max(
+                    0.0, first_safe_zero_timestamp_s - first_zero_monotonic)),
             "timeout_reason": timeout_reason,
+            "timeout_condition": timeout_detail,
         }
+        record.update(_stop_timeline_fields(assessments))
         if self.record_result is not None:
             self.record_result(record)
         summary = {
@@ -1853,12 +2800,177 @@ def describe_trial(spec: TrialSpec) -> str:
             f"rotation direction={spec.direction.upper()} "
             f"angular_velocity_rad_s={spec.velocity:.9g} "
             f"duration_s={spec.duration_s:.9g} "
-            f"expected_angle_rad={spec.commanded_angle_rad:.9g}")
+            f"expected_angle_rad={spec.commanded_angle_rad:.9g} "
+            f"expected_angle_deg={math.degrees(spec.commanded_angle_rad):.9g}")
     return (
         f"translation direction={spec.direction} "
         f"linear_velocity_m_s={spec.velocity:.9g} "
         f"duration_s={spec.duration_s:.9g} "
         f"expected_displacement_m={spec.commanded_distance_m:.9g}")
+
+
+class InteractiveCampaignMenu:
+    """Default confirmation-gated translation/rotation campaign workflow."""
+
+    def __init__(self, operator_input, limits: InteractiveLimits, display):
+        self.operator_input = operator_input
+        self.limits = limits
+        self.display = display
+
+    def choose_initial(self, sequence: int = 1) -> Optional[TrialSpec]:
+        while True:
+            choice = self.operator_input.read_text(
+                "Select test type:\n1 - Translation\n2 - Rotation\n3 - Exit\nSelection: ").strip()
+            if choice == "3":
+                return None
+            if choice == "1":
+                candidate = self._translation(sequence)
+            elif choice == "2":
+                candidate = self._rotation(sequence)
+            else:
+                self.operator_input.notify("Invalid selection. Enter 1, 2, or 3.")
+                continue
+            if self._confirm(candidate):
+                return candidate
+
+    def choose_next(self, previous: TrialSpec, sequence: int) -> Optional[TrialSpec]:
+        while True:
+            choice = self.operator_input.read_text(
+                "Select next action:\n"
+                "1 - Same movement with 1.5x velocity\n"
+                "2 - Same movement with 1.5x duration\n"
+                "3 - Toggle direction\n"
+                "4 - Switch movement type\n"
+                "5 - End tests\nSelection: ").strip()
+            if choice == "5":
+                return None
+            if choice == "1":
+                candidate = self._scaled_velocity(previous, sequence)
+            elif choice == "2":
+                candidate = self._scaled_duration(previous, sequence)
+            elif choice == "3":
+                direction = {
+                    "forward": "backward", "backward": "forward",
+                    "cw": "ccw", "ccw": "cw"}[previous.direction]
+                candidate = TrialSpec(
+                    self._trial_id(previous.movement_type, sequence, direction),
+                    previous.movement_type, previous.velocity,
+                    previous.duration_s, direction)
+            elif choice == "4":
+                candidate = (
+                    self._rotation(sequence) if previous.movement_type == "translation"
+                    else self._translation(sequence))
+            else:
+                self.operator_input.notify("Invalid selection. Enter a number from 1 to 5.")
+                continue
+            if candidate is not None and self._confirm(candidate):
+                return candidate
+
+    def _scaled_velocity(self, previous: TrialSpec, sequence: int) -> Optional[TrialSpec]:
+        maximum = (
+            self.limits.max_angular_velocity_rad_s
+            if previous.movement_type == "rotation" else
+            self.limits.max_linear_velocity_m_s)
+        velocity = previous.velocity * 1.5
+        if velocity > maximum or not math.isfinite(velocity):
+            self.operator_input.notify(
+                "Derived velocity exceeds the configured limit; enter a lower "
+                "valid value or 'menu'.")
+            answer = self.operator_input.read_text(
+                "Lower velocity, or 'menu': ").strip()
+            if answer.lower() == "menu":
+                return None
+            try:
+                velocity = float(answer)
+            except ValueError:
+                self.operator_input.notify("Invalid numeric input.")
+                return None
+        if previous.movement_type == "rotation":
+            if not (math.isfinite(velocity) and 0.0 < velocity <= maximum):
+                self.operator_input.notify(
+                    "Rotation velocity is outside the configured safe limit.")
+                return None
+        elif not (math.isfinite(velocity) and
+                  self.limits.min_linear_velocity_m_s <= velocity <= maximum):
+            self.operator_input.notify(
+                "Translation velocity is outside the configured safe range.")
+            return None
+        return TrialSpec(
+            self._trial_id(previous.movement_type, sequence, previous.direction),
+            previous.movement_type, velocity, previous.duration_s, previous.direction)
+
+    def _scaled_duration(self, previous: TrialSpec, sequence: int) -> Optional[TrialSpec]:
+        duration = previous.duration_s * 1.5
+        maximum = (
+            self.limits.max_rotation_duration_s if previous.movement_type == "rotation"
+            else self.limits.max_translation_duration_s)
+        if not math.isfinite(duration) or duration > maximum:
+            self.operator_input.notify(
+                "Derived duration exceeds the configured limit; choose another option.")
+            return None
+        return TrialSpec(
+            self._trial_id(previous.movement_type, sequence, previous.direction),
+            previous.movement_type, previous.velocity, duration, previous.direction)
+
+    def _translation(self, sequence: int) -> TrialSpec:
+        direction = self._choice("Direction:\n1 - Forward\n2 - Backward\nSelection: ",
+                                 {"1": "forward", "2": "backward"})
+        velocity = self._bounded_float(
+            "Linear velocity (m/s): ", self.limits.min_linear_velocity_m_s,
+            self.limits.max_linear_velocity_m_s, "linear velocity")
+        duration = self._bounded_float(
+            "Duration (s): ", self.limits.min_translation_duration_s,
+            self.limits.max_translation_duration_s, "translation duration")
+        return TrialSpec(self._trial_id("translation", sequence, direction),
+                         "translation", velocity, duration, direction)
+
+    def _rotation(self, sequence: int) -> TrialSpec:
+        direction = self._choice("Direction:\n1 - CW\n2 - CCW\nSelection: ",
+                                 {"1": "cw", "2": "ccw"})
+        velocity = self._bounded_float(
+            "Angular velocity (rad/s): ", 0.0,
+            self.limits.max_angular_velocity_rad_s, "angular velocity", True)
+        duration = self._bounded_float(
+            "Duration (s): ", 0.0, self.limits.max_rotation_duration_s,
+            "rotation duration", True)
+        return TrialSpec(self._trial_id("rotation", sequence, direction),
+                         "rotation", velocity, duration, direction)
+
+    def _choice(self, prompt: str, options: Dict[str, str]) -> str:
+        while True:
+            answer = self.operator_input.read_text(prompt).strip()
+            if answer in options:
+                return options[answer]
+            self.operator_input.notify("Invalid selection.")
+
+    def _bounded_float(
+            self, prompt: str, minimum: float, maximum: float, label: str,
+            strict_minimum: bool = False) -> float:
+        while True:
+            value = self.operator_input.read_float(prompt)
+            lower_ok = value > minimum if strict_minimum else value >= minimum
+            if math.isfinite(value) and lower_ok and value <= maximum:
+                return value
+            self.operator_input.notify(
+                f"{label.capitalize()} must be within (0, {maximum:.9g}] and "
+                "meet configured limits.")
+
+    def _confirm(self, candidate: TrialSpec) -> bool:
+        self.display("Proposed command: " + describe_trial(candidate))
+        while True:
+            answer = self.operator_input.read_text(
+                "Confirm this test before motion? [yes/no]: ").strip().lower()
+            if answer in ("yes", "y"):
+                return True
+            if answer in ("no", "n"):
+                self.operator_input.notify("Proposed test not confirmed; returning to menu.")
+                return False
+            self.operator_input.notify("Please answer yes or no.")
+
+    @staticmethod
+    def _trial_id(movement_type: str, sequence: int, direction: str) -> str:
+        prefix = "trans" if movement_type == "translation" else "rot"
+        return f"{prefix}-{sequence:03d}-{direction}"
 
 
 class InteractiveTrialMenu:
@@ -2180,6 +3292,17 @@ def run_trial_until_accepted(
     while True:
         result = execute_once(spec)
         verdict, reason, notes = operator.ask_validity()
+        if result.laser is not None and not result.laser.get("quality_passed", False):
+            return TrialResult(
+                spec=result.spec, timestamp=result.timestamp,
+                measurements=result.measurements, errors=result.errors,
+                valid=False, skipped=False,
+                rejection_reason=result.laser.get("quality_rejection_reason"),
+                operator_notes=notes, evidence_dir=result.evidence_dir,
+                initial_compass_heading_deg=result.initial_compass_heading_deg,
+                final_compass_heading_deg=result.final_compass_heading_deg,
+                manual_reference=result.manual_reference,
+                teledex=result.teledex, laser=result.laser)
         if verdict == "valid":
             return TrialResult(
                 spec=result.spec,
@@ -2192,7 +3315,9 @@ def run_trial_until_accepted(
                 operator_notes=notes,
                 evidence_dir=result.evidence_dir,
                 initial_compass_heading_deg=result.initial_compass_heading_deg,
-                final_compass_heading_deg=result.final_compass_heading_deg)
+                final_compass_heading_deg=result.final_compass_heading_deg,
+                manual_reference=result.manual_reference,
+                teledex=result.teledex, laser=result.laser)
         if verdict == "skipped":
             return TrialResult(
                 spec=result.spec,
@@ -2205,7 +3330,9 @@ def run_trial_until_accepted(
                 operator_notes=notes,
                 evidence_dir=result.evidence_dir,
                 initial_compass_heading_deg=result.initial_compass_heading_deg,
-                final_compass_heading_deg=result.final_compass_heading_deg)
+                final_compass_heading_deg=result.final_compass_heading_deg,
+                manual_reference=result.manual_reference,
+                teledex=result.teledex, laser=result.laser)
 
 
 def make_trial_result(
@@ -2217,7 +3344,10 @@ def make_trial_result(
         operator_notes: str = "",
         evidence_dir: Optional[str] = None,
         initial_compass_heading_deg: Optional[float] = None,
-        final_compass_heading_deg: Optional[float] = None) -> TrialResult:
+        final_compass_heading_deg: Optional[float] = None,
+        manual_reference: Optional[Dict[str, object]] = None,
+        teledex: Optional[Dict[str, object]] = None,
+        laser: Optional[Dict[str, object]] = None) -> TrialResult:
     """Construct a result and compute movement-appropriate errors."""
     return TrialResult(
         spec=spec,
@@ -2230,4 +3360,7 @@ def make_trial_result(
         operator_notes=operator_notes,
         evidence_dir=evidence_dir,
         initial_compass_heading_deg=initial_compass_heading_deg,
-        final_compass_heading_deg=final_compass_heading_deg)
+        final_compass_heading_deg=final_compass_heading_deg,
+        manual_reference=manual_reference,
+        teledex=teledex,
+        laser=laser)
