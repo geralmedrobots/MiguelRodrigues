@@ -28,6 +28,7 @@
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstdlib>
@@ -98,6 +99,174 @@ driver::SerialTransportConfig transportConfig(const std::string & port)
   config.transaction_timeout = 50ms;
   config.max_response_bytes = 64;
   return config;
+}
+
+TEST(SerialTransportOwnership, SamePortExclusionFailsClosed)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  driver::RoboteqSerialTransport first(transportConfig(terminal.slaveName()));
+  driver::RoboteqSerialTransport second(transportConfig(terminal.slaveName()));
+  std::string error;
+
+  ASSERT_TRUE(first.open(error)) << error;
+  error.clear();
+  EXPECT_FALSE(second.open(error));
+  EXPECT_NE(error.find("serial port already owned by another process"), std::string::npos);
+}
+
+TEST(SerialTransportOwnership, LockIsReleasedOnTransportDestruction)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  std::string error;
+  {
+    driver::RoboteqSerialTransport first(transportConfig(terminal.slaveName()));
+    ASSERT_TRUE(first.open(error)) << error;
+  }
+
+  driver::RoboteqSerialTransport second(transportConfig(terminal.slaveName()));
+  EXPECT_TRUE(second.open(error)) << error;
+}
+
+TEST(SerialTransportOwnership, DeviceAliasesShareOneLock)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  char alias_path[] = "/tmp/roboteq-serial-alias-XXXXXX";
+  const int placeholder = mkstemp(alias_path);
+  ASSERT_GE(placeholder, 0);
+  ASSERT_EQ(close(placeholder), 0);
+  ASSERT_EQ(unlink(alias_path), 0);
+  ASSERT_EQ(symlink(terminal.slaveName().c_str(), alias_path), 0);
+
+  driver::RoboteqSerialTransport first(transportConfig(terminal.slaveName()));
+  driver::RoboteqSerialTransport alias(transportConfig(alias_path));
+  std::string error;
+  ASSERT_TRUE(first.open(error)) << error;
+  error.clear();
+  EXPECT_FALSE(alias.open(error));
+  EXPECT_NE(error.find("serial port already owned by another process"), std::string::npos);
+
+  EXPECT_EQ(unlink(alias_path), 0);
+}
+
+TEST(SerialTransportOwnership, DeviceAppearingAfterConstructionUsesPhysicalLock)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  char alias_path[] = "/tmp/roboteq-serial-late-alias-XXXXXX";
+  const int placeholder = mkstemp(alias_path);
+  ASSERT_GE(placeholder, 0);
+  ASSERT_EQ(close(placeholder), 0);
+  ASSERT_EQ(unlink(alias_path), 0);
+
+  driver::RoboteqSerialTransport owner(transportConfig(alias_path));
+  ASSERT_EQ(symlink(terminal.slaveName().c_str(), alias_path), 0);
+  driver::RoboteqSerialTransport contender(transportConfig(terminal.slaveName()));
+  std::string error;
+  ASSERT_TRUE(owner.open(error)) << error;
+  error.clear();
+  EXPECT_FALSE(contender.open(error));
+  EXPECT_NE(error.find("serial port already owned by another process"), std::string::npos);
+
+  EXPECT_EQ(unlink(alias_path), 0);
+}
+
+TEST(SerialTransportOwnership, ReconnectLocksReplacementPhysicalDevice)
+{
+  PseudoTerminal first_terminal;
+  PseudoTerminal replacement_terminal;
+  ASSERT_TRUE(first_terminal.valid());
+  ASSERT_TRUE(replacement_terminal.valid());
+  char alias_path[] = "/tmp/roboteq-serial-replacement-XXXXXX";
+  const int placeholder = mkstemp(alias_path);
+  ASSERT_GE(placeholder, 0);
+  ASSERT_EQ(close(placeholder), 0);
+  ASSERT_EQ(unlink(alias_path), 0);
+  ASSERT_EQ(symlink(first_terminal.slaveName().c_str(), alias_path), 0);
+
+  driver::RoboteqSerialTransport owner(transportConfig(alias_path));
+  std::string error;
+  ASSERT_TRUE(owner.open(error)) << error;
+  owner.close();
+  ASSERT_EQ(unlink(alias_path), 0);
+  ASSERT_EQ(symlink(replacement_terminal.slaveName().c_str(), alias_path), 0);
+  ASSERT_TRUE(owner.open(error)) << error;
+
+  driver::RoboteqSerialTransport contender(transportConfig(replacement_terminal.slaveName()));
+  error.clear();
+  EXPECT_FALSE(contender.open(error));
+  EXPECT_NE(error.find("serial port already owned by another process"), std::string::npos);
+
+  EXPECT_EQ(unlink(alias_path), 0);
+}
+
+TEST(SerialTransportOwnership, SamePhysicalPortIsExcludedAcrossProcesses)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  int gate[2] = {-1, -1};
+  ASSERT_EQ(pipe(gate), 0);
+
+  const pid_t child = fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    (void)close(gate[1]);
+    char ready = 0;
+    if (read(gate[0], &ready, 1) != 1) {
+      _exit(2);
+    }
+    driver::RoboteqSerialTransport contender(transportConfig(terminal.slaveName()));
+    std::string child_error;
+    const bool opened = contender.open(child_error);
+    _exit(
+      !opened && child_error.find("serial port already owned by another process") !=
+      std::string::npos ? 0 : 3);
+  }
+
+  ASSERT_EQ(close(gate[0]), 0);
+  driver::RoboteqSerialTransport owner(transportConfig(terminal.slaveName()));
+  std::string error;
+  ASSERT_TRUE(owner.open(error)) << error;
+  ASSERT_EQ(write(gate[1], "x", 1), 1);
+  ASSERT_EQ(close(gate[1]), 0);
+
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(SerialTransportOwnership, DistinctPortsAreIndependent)
+{
+  PseudoTerminal first_terminal;
+  PseudoTerminal second_terminal;
+  ASSERT_TRUE(first_terminal.valid());
+  ASSERT_TRUE(second_terminal.valid());
+  driver::RoboteqSerialTransport first(transportConfig(first_terminal.slaveName()));
+  driver::RoboteqSerialTransport second(transportConfig(second_terminal.slaveName()));
+  std::string error;
+
+  ASSERT_TRUE(first.open(error)) << error;
+  error.clear();
+  EXPECT_TRUE(second.open(error)) << error;
+}
+
+TEST(SerialTransportOwnership, LockPersistsAcrossCloseAndReopen)
+{
+  PseudoTerminal terminal;
+  ASSERT_TRUE(terminal.valid());
+  driver::RoboteqSerialTransport first(transportConfig(terminal.slaveName()));
+  driver::RoboteqSerialTransport second(transportConfig(terminal.slaveName()));
+  std::string error;
+
+  ASSERT_TRUE(first.open(error)) << error;
+  first.close();
+  error.clear();
+  EXPECT_FALSE(second.open(error));
+  EXPECT_NE(error.find("serial port already owned by another process"), std::string::npos);
+  ASSERT_TRUE(first.open(error)) << error;
 }
 
 ssize_t writeReply(int descriptor, const std::string & reply)

@@ -27,12 +27,21 @@
 
 #include "roboteq_ros2_driver/roboteq_serial_transport.hpp"
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+
 #include <charconv>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <exception>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -45,6 +54,37 @@ namespace
 {
 
 constexpr std::size_t kMaxDiagnosticResponseBytes = 256;
+
+std::string serial_port_physical_identity(const std::string & port)
+{
+  struct stat device_status {};
+  if (::stat(port.c_str(), &device_status) == 0 && S_ISCHR(device_status.st_mode)) {
+    std::ostringstream identity;
+    identity << "character-device:" << ::major(device_status.st_rdev) << ':' <<
+      ::minor(device_status.st_rdev);
+    return identity.str();
+  }
+  return {};
+}
+
+uint64_t serial_port_lock_key(const std::string & identity)
+{
+  // Stable across processes and builds; std::hash is not required to be stable.
+  uint64_t key = 14695981039346656037ULL;
+  for (const unsigned char byte : identity) {
+    key ^= byte;
+    key *= 1099511628211ULL;
+  }
+  return key;
+}
+
+std::string serial_port_lock_path(const std::string & identity)
+{
+  std::ostringstream path;
+  path << "/tmp/pharmarobot-roboteq-serial-" << std::hex << std::setw(16) <<
+    std::setfill('0') << serial_port_lock_key(identity) << ".lock";
+  return path.str();
+}
 
 bool starts_with(const std::string & value, const std::string & prefix)
 {
@@ -222,10 +262,73 @@ RoboteqSerialTransport::RoboteqSerialTransport(SerialTransportConfig config)
   serial_.setTimeout(timeout);
 }
 
+RoboteqSerialTransport::~RoboteqSerialTransport()
+{
+  close();
+  releasePortLocks();
+}
+
+bool RoboteqSerialTransport::acquirePortLock(
+  const std::string & identity, std::string & error)
+{
+  const std::string lock_path = serial_port_lock_path(identity);
+  for (const auto & lock : port_locks_) {
+    if (lock.first == lock_path) {
+      return true;
+    }
+  }
+
+  const int fd = ::open(
+    lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0) {
+    error = "failed to create serial ownership lock for '" + config_.port + "': " +
+      std::strerror(errno);
+    return false;
+  }
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    const int lock_error = errno;
+    (void)::close(fd);
+    if (lock_error == EWOULDBLOCK || lock_error == EAGAIN) {
+      error = "serial port already owned by another process: " + config_.port;
+    } else {
+      error = "failed to acquire serial ownership lock for '" + config_.port + "': " +
+        std::strerror(lock_error);
+    }
+    return false;
+  }
+  port_locks_.emplace_back(lock_path, fd);
+  return true;
+}
+
+bool RoboteqSerialTransport::acquirePortLocks(std::string & error)
+{
+  // Always retain a stable configured-path lock, including while the device is
+  // absent. Re-evaluate and additionally lock the current character-device
+  // identity on every open attempt so aliases and replacement devices cannot
+  // bypass ownership during reconnect.
+  if (!acquirePortLock("configured-path:" + config_.port, error)) {
+    return false;
+  }
+  const std::string physical_identity = serial_port_physical_identity(config_.port);
+  return physical_identity.empty() || acquirePortLock(physical_identity, error);
+}
+
+void RoboteqSerialTransport::releasePortLocks() noexcept
+{
+  for (const auto & lock : port_locks_) {
+    (void)::flock(lock.second, LOCK_UN);
+    (void)::close(lock.second);
+  }
+  port_locks_.clear();
+}
+
 bool RoboteqSerialTransport::open(std::string & error)
 {
   try {
     if (!serial_.isOpen()) {
+      if (!acquirePortLocks(error)) {
+        return false;
+      }
       serial_.open();
     }
     if (!serial_.isOpen()) {

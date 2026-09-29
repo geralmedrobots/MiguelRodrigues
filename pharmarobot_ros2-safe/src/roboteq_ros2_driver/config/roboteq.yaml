@@ -2,7 +2,9 @@ roboteq_ros2_driver:
   ros__parameters:
     pub_odom_tf: true
     odom_frame: "odom"
-    base_frame: "base_link"
+    # The driver publishes both /odom.child_frame_id and odom -> base_frame.
+    # base_link is connected by the robot-description static TF.
+    base_frame: "base_footprint"
     cmdvel_topic: "/cmd_vel/safe"
     odom_topic: "odom"
     port: "/dev/roboteq"
@@ -37,15 +39,15 @@ roboteq_ros2_driver:
     telemetry_stale_after_ms: 1000
     channel_1: "left" # physical left motor
     channel_2: "right" # physical right motor
-    odom_pose_covariance_x: 0.05
-    odom_pose_covariance_y: 0.10
+    odom_pose_covariance_x: 0.00038836549903344857
+    odom_pose_covariance_y: 1000000.0
     odom_pose_covariance_z: 1000000.0
     odom_pose_covariance_roll: 1000000.0
     odom_pose_covariance_pitch: 1000000.0
-    odom_pose_covariance_yaw: 0.25
-    odom_twist_covariance_linear_x: 0.10
+    odom_pose_covariance_yaw: 0.00057550011888288
+    odom_twist_covariance_linear_x: 0.000031202481373667175
     odom_twist_covariance_linear_y: 1000000.0
     odom_twist_covariance_linear_z: 1000000.0
     odom_twist_covariance_angular_x: 1000000.0
     odom_twist_covariance_angular_y: 1000000.0
-    odom_twist_covariance_angular_z: 0.50
+    odom_twist_covariance_angular_z: 0.0000440785262892757

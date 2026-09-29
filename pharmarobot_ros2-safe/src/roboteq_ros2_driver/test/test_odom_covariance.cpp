@@ -81,12 +81,48 @@ TEST(OdomCovariance, UsesHighCovarianceForUnobservedDofs)
   const auto twist = covariance::build_twist_covariance(config);
 
   EXPECT_GE(pose[covariance::kZIndex], 1000000.0);
+  EXPECT_GE(pose[covariance::kYIndex], 1000000.0);
   EXPECT_GE(pose[covariance::kRollIndex], 1000000.0);
   EXPECT_GE(pose[covariance::kPitchIndex], 1000000.0);
   EXPECT_GE(twist[covariance::kYIndex], 1000000.0);
   EXPECT_GE(twist[covariance::kZIndex], 1000000.0);
   EXPECT_GE(twist[covariance::kRollIndex], 1000000.0);
   EXPECT_GE(twist[covariance::kPitchIndex], 1000000.0);
+}
+
+TEST(OdomCovariance, EmpiricalDefaultsPopulateOnlyMeasuredDiagonals)
+{
+  const auto config = covariance::default_config();
+  const auto pose = covariance::build_pose_covariance(config);
+  const auto twist = covariance::build_twist_covariance(config);
+
+  EXPECT_DOUBLE_EQ(pose[covariance::kXIndex], 0.00038836549903344857);
+  EXPECT_DOUBLE_EQ(pose[covariance::kYawIndex], 0.00057550011888288);
+  EXPECT_DOUBLE_EQ(twist[covariance::kXIndex], 0.000031202481373667175);
+  EXPECT_DOUBLE_EQ(twist[covariance::kYawIndex], 0.0000440785262892757);
+  EXPECT_EQ(pose.size(), 36U);
+  EXPECT_EQ(twist.size(), 36U);
+  EXPECT_GE(pose[covariance::kYIndex], 1000000.0);
+  EXPECT_GE(twist[covariance::kYIndex], 1000000.0);
+}
+
+TEST(OdomCovariance, MatricesAreThirtySixElementSymmetricNonNegative)
+{
+  const auto config = covariance::default_config();
+  const auto matrices = std::array<covariance::CovarianceMatrix, 2>{
+    covariance::build_pose_covariance(config),
+    covariance::build_twist_covariance(config)};
+  for (const auto & matrix : matrices) {
+    ASSERT_EQ(matrix.size(), 36U);
+    for (std::size_t row = 0; row < 6; ++row) {
+      for (std::size_t column = 0; column < 6; ++column) {
+        EXPECT_DOUBLE_EQ(matrix[row * 6 + column], matrix[column * 6 + row]);
+      }
+    }
+    for (double value : matrix) {
+      EXPECT_GE(value, 0.0);
+    }
+  }
 }
 
 TEST(OdomCovariance, AssignsCustomPoseAndTwistValues)

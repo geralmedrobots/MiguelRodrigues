@@ -41,12 +41,12 @@ TEST(OdomTf, BuildsOdomToBaseTransform)
   const double half_pi = std::acos(-1.0) / 2.0;
 
   const auto transform = odom_tf::build_odom_to_base_transform(
-    "odom", "base_link", stamp, 1.25, -0.5, half_pi);
+    "odom", "base_footprint", stamp, 1.25, -0.5, half_pi);
 
   EXPECT_EQ(transform.header.stamp.sec, 123);
   EXPECT_EQ(transform.header.stamp.nanosec, 456u);
   EXPECT_EQ(transform.header.frame_id, "odom");
-  EXPECT_EQ(transform.child_frame_id, "base_link");
+  EXPECT_EQ(transform.child_frame_id, "base_footprint");
   EXPECT_DOUBLE_EQ(transform.transform.translation.x, 1.25);
   EXPECT_DOUBLE_EQ(transform.transform.translation.y, -0.5);
   EXPECT_DOUBLE_EQ(transform.transform.translation.z, 0.0);

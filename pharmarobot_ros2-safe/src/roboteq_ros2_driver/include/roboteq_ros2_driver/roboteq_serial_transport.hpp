@@ -269,6 +269,7 @@ class RoboteqSerialTransport : public IRoboteqSerialTransport
 {
 public:
   explicit RoboteqSerialTransport(SerialTransportConfig config);
+  ~RoboteqSerialTransport() override;
 
   bool open(std::string & error) override;
   void close() noexcept override;
@@ -298,6 +299,9 @@ public:
     const std::function<bool(std::string &)> & before_synchronization) override;
 
 private:
+  bool acquirePortLocks(std::string & error);
+  bool acquirePortLock(const std::string & identity, std::string & error);
+  void releasePortLocks() noexcept;
   bool readLine(
     const std::chrono::steady_clock::time_point & deadline,
     std::string & line,
@@ -315,6 +319,7 @@ private:
 
   SerialTransportConfig config_;
   serial::Serial serial_;
+  std::vector<std::pair<std::string, int>> port_locks_;
 };
 
 std::string strip_roboteq_line_endings(const std::string & text);

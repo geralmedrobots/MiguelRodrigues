@@ -76,13 +76,18 @@ controller firmware returns configuration queries in the expected
 
 ## Dynamic odometry TF
 
-When `pub_odom_tf` is true, the driver publishes a dynamic `odom -> base_link`
+When `pub_odom_tf` is true, the driver publishes a dynamic `odom -> base_footprint`
 transform from the same wheel-odometry pose used for `/odom`. The transform
 uses the odometry message timestamp, `odom_frame` as the parent frame,
 `base_frame` as the child frame, x/y translation from odometry, z translation
 set to zero, and the odometry yaw quaternion. The default runtime
 configuration enables this with `odom_frame: "odom"` and
-`base_frame: "base_link"`.
+`base_frame: "base_footprint"`.
+
+The production lidar/static-TF launch owns the static `base_footprint ->
+base_link` transform (`z = 0.042 m`) and the static sensor transforms from
+`base_link`. This keeps the driver as the sole owner of `odom ->
+base_footprint` and avoids a duplicate `odom -> base_link` publisher.
 
 This does not add or restore a static odom transform. Existing odometry math,
 encoder signs, wheel geometry, motor command generation, serial behaviour and
@@ -484,33 +489,36 @@ The `/odom` publisher uses explicit diagonal covariance parameters for
 indices are `0`, `7`, `14`, `21`, `28`, and `35`; all off-diagonal entries are
 zero.
 
-Default conservative fallback variances:
+Current empirical variances (from the completed 160-trial calibration) and
+conservative high-covariance values for unsupported axes:
 
-    odom_pose_covariance_x: 0.05
-    odom_pose_covariance_y: 0.10
+    odom_pose_covariance_x: 0.00038836549903344857
+    odom_pose_covariance_y: 1000000.0
     odom_pose_covariance_z: 1000000.0
     odom_pose_covariance_roll: 1000000.0
     odom_pose_covariance_pitch: 1000000.0
-    odom_pose_covariance_yaw: 0.25
-    odom_twist_covariance_linear_x: 0.10
+    odom_pose_covariance_yaw: 0.00057550011888288
+    odom_twist_covariance_linear_x: 0.000031202481373667175
     odom_twist_covariance_linear_y: 1000000.0
     odom_twist_covariance_linear_z: 1000000.0
     odom_twist_covariance_angular_x: 1000000.0
     odom_twist_covariance_angular_y: 1000000.0
-    odom_twist_covariance_angular_z: 0.50
+    odom_twist_covariance_angular_z: 0.0000440785262892757
 
-The observed planar wheel-odometry DOFs are pose `x`, `y`, `yaw` and twist
-`linear.x`, `angular.z`. Unobserved DOFs use high covariance: pose `z`, `roll`,
-`pitch` and twist `linear.y`, `linear.z`, `angular.x`, `angular.y`. Negative,
+The completed 160-trial calibration empirically supports pose `x`, `yaw` and
+twist `linear.x`, `angular.z`. Unsupported DOFs use high covariance: pose `y`,
+`z`, `roll`, `pitch` and twist `linear.y`, `linear.z`, `angular.x`, `angular.y`.
+Negative,
 NaN, or infinite covariance parameters are sanitized during odometry setup and
 replaced with the conservative default for that field.
 
-These defaults are not calibrated robot-specific values. To calibrate them,
-record ground-truth and wheel-odometry trajectories over representative
-straight, reverse, turning, and mixed-motion runs. Compute the odometry error
-variance for pose and twist terms, then configure the measured variances with a
-safety margin. Keep unobserved DOFs high unless another sensor independently
-measures them.
+The derivation, raw-source policy, grouped statistics, and outlier sensitivity
+analysis are recorded in
+`src/odometry_validation/covariance_characterization_evidence/`. The selected
+translation estimator is robust MAD variance over magnitude-only wall-distance
+residuals; rotation uses wrapped manual compass references. Keep unobserved
+DOFs high unless another sensor independently measures them. A fresh
+characterization is required after the planned new calibration and validation.
 
 This change does not alter pose integration, twist calculation, dynamic TF,
 encoder signs, wheel radius, wheel separation, channel assignment, motor
@@ -606,6 +614,19 @@ Reconnect advances the connection generation, invalidates old telemetry and
 diagnostic state, preserves the fresh-command gate, and never replays a
 pre-failure motion command.
 
+The serial transport acquires a nonblocking exclusive advisory ownership lock
+derived from the physical character-device identity before opening the port,
+so aliases such as `/dev/roboteq` and `/dev/ttyUSB0` cannot create independent
+owners of the same device. A stable configured-path lock is also retained while
+the device is absent. Every reconnect re-evaluates and locks the current
+physical identity, retaining prior identities until the transport object is
+destroyed; device appearance or replacement therefore cannot bypass ownership.
+A second transport for the same physical port fails closed with an explicit
+ownership error; different physical ports use independent locks.
+The lock is advisory between production driver instances; direct maintenance
+tools must retain their existing service-stop, process-ownership, `flock`, and
+TTY-exclusivity gates.
+
 This mechanism protects transaction framing and diagnostic data integrity. It
 does not grant motion permission and is not a functional-safety or physical
 STO mechanism. Hardware safety/STO remains **UNSUPPORTED — external contactor
@@ -626,7 +647,7 @@ area clear:
    direction.
 5. Release the deadman or stop commands and confirm a timeout stop occurs once
    and motion does not resume without a fresh command.
-6. Observe `/wheel_ticks`, `/odom`, and dynamic `odom -> base_link` TF for
+6. Observe `/wheel_ticks`, `/odom`, and dynamic `odom -> base_footprint` TF for
    plausible updates while wheels turn.
 7. Power-cycle or disconnect/reconnect the Roboteq serial device only under a
    safe lifted-wheel procedure. Confirm the driver reconnects stopped and does
