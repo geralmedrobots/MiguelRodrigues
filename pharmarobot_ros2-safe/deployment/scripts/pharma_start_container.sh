@@ -3,15 +3,19 @@ set -euo pipefail
 
 CONTAINER="${PHARMA_CONTAINER:-pharma_container}"
 IMAGE="${PHARMA_IMAGE:-pharmarobot:clean}"
-WS_DIR="${PHARMA_WS_DIR:-/home/medrobots/pharmarobot/pharmarobot/pharmarobot_ros2-master}"
 ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-0}"
 RMW_IMPLEMENTATION_VALUE="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 ROS_LOCALHOST_ONLY_VALUE="${ROS_LOCALHOST_ONLY:-0}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ ! -d "$WS_DIR/src" ]]; then
-  echo "[pharma-container] Workspace source not found: $WS_DIR/src" >&2
-  exit 1
-fi
+# shellcheck source=deployment/scripts/teledex_reference_mount.sh
+source "$SCRIPT_DIR/teledex_reference_mount.sh"
+# shellcheck source=deployment/scripts/pharma_workspace_mount.sh
+source "$SCRIPT_DIR/pharma_workspace_mount.sh"
+
+WS_DIR=""
+WORKSPACE_MOUNT_ARGS=()
+configure_pharma_workspace_mounts WORKSPACE_MOUNT_ARGS WS_DIR
 
 if [[ ! "$ROS_DOMAIN_ID_VALUE" =~ ^[0-9]+$ ]] ||
    (( ROS_DOMAIN_ID_VALUE < 0 || ROS_DOMAIN_ID_VALUE > 232 )); then
@@ -28,6 +32,8 @@ FRONT_DEVICE="${FRONT_PORT:-/dev/lidar_front}"
 BACK_DEVICE="${BACK_PORT:-/dev/lidar_back}"
 
 DEVICE_ARGS=()
+TELEDEX_MOUNT_ARGS=()
+configure_teledex_reference_mount TELEDEX_MOUNT_ARGS
 map_device() {
   local host_name="$1"
   local container_name="$2"
@@ -90,13 +96,14 @@ docker run -d \
   --name "$CONTAINER" \
   --network host \
   "${DEVICE_ARGS[@]}" \
+  "${WORKSPACE_MOUNT_ARGS[@]}" \
+  "${TELEDEX_MOUNT_ARGS[@]}" \
   --mount type=bind,src=/dev/input,dst=/dev/input \
   --device-cgroup-rule 'c 13:* rwm' \
   -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID_VALUE" \
   -e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY_VALUE" \
   -e RMW_IMPLEMENTATION="$RMW_IMPLEMENTATION_VALUE" \
-  -v "$WS_DIR/src:/ros_ws/src" \
-  -v "$WS_DIR/deployment:/ros_ws/deployment:ro" \
+  -e TELEDEX_REFERENCE_ROOT="${TELEDEX_REFERENCE_CONTAINER_DIR:-/opt/teledex_reference}" \
   "$IMAGE" \
   bash -lc 'source /opt/ros/humble/setup.bash && tail -f /dev/null'
 
@@ -105,9 +112,10 @@ docker exec "$CONTAINER" bash -lc '
   cd /ros_ws
   source /opt/ros/humble/setup.bash
   colcon build --symlink-install \
-    --packages-up-to serial sllidar_ros2 joy_to_cmdvel command_arbiter roboteq_ros2_driver teleop_pharma
+    --packages-up-to serial sllidar_ros2 joy_to_cmdvel command_arbiter roboteq_ros2_driver teleop_pharma pharmarobot_slam odometry_validation
 '
 
 echo \
   "[pharma-container] Started $CONTAINER with " \
-  "ROS_DOMAIN_ID=$ROS_DOMAIN_ID_VALUE and no direct D455 hardware access"
+  "ROS_DOMAIN_ID=$ROS_DOMAIN_ID_VALUE, read-only TeleDex reference source, " \
+  "and no direct D455 hardware access"

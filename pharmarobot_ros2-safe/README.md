@@ -71,6 +71,71 @@ Default image name:
 pharmarobot:clean
 ```
 
+The main image installs the validated TeleDex Python environment from
+`deployment/requirements/teledex.txt`. By default the container launcher also
+requires `/home/medrobots/teledex_reference/teledex_logger.py` and binds only
+that source file at `/opt/teledex_reference/teledex_logger.py` read-only. The
+host virtual environment is not mounted. These paths are configurable with:
+
+```text
+TELEDEX_REFERENCE_ENABLED=1
+TELEDEX_REFERENCE_HOST_DIR=/home/medrobots/teledex_reference
+TELEDEX_REFERENCE_CONTAINER_DIR=/opt/teledex_reference
+```
+
+The main container already uses host networking. TeleDex 0.0.7 listens for the
+iPhone's inbound WebSocket connection on the host network (port 8888 by
+default), so this integration adds no port mapping and does not change DDS
+networking.
+
+## Standalone TeleDex diagnostics
+
+`tools/teledex_diagnostics.py` is a read-only standalone iPhone/ARKit stream
+observer. It imports neither ROS nor `odometry_validation`, publishes no
+`/cmd_vel`, and does not create an odometry trial. Run it in the provisioned
+TeleDex environment, with no other TeleDex listener using the port.
+
+Live display and event log:
+
+```bash
+/home/medrobots/teledex_reference/teledex_env/bin/python \
+  /home/medrobots/codex_work/MiguelRodrigues/pharmarobot_ros2-safe/tools/teledex_diagnostics.py \
+  --reference-root /home/medrobots/teledex_reference
+```
+
+60-second stationary transport trace (no robot motion), written without
+overwriting an existing result:
+
+```bash
+/home/medrobots/teledex_reference/teledex_env/bin/python \
+  /home/medrobots/codex_work/MiguelRodrigues/pharmarobot_ros2-safe/tools/teledex_diagnostics.py \
+  --reference-root /home/medrobots/teledex_reference \
+  --duration 60 \
+  --json-output /tmp/teledex-stationary-$(date -u +%Y%m%dT%H%M%SZ).json
+```
+
+The default fixed `T_phone_base` mount is RPY `(-90, 0, 0)` degrees and
+translation `(0.1425, -0.1000, -0.0075)` m. The display reports raw phone and
+corrected `base_link` poses, wrapped/unwrapped yaw, callback gaps/rate,
+repeated-pose runs, connection/session state, optional source timing, tracking
+provenance, and fail-closed status. A stationary summary fails on absent
+callbacks, a receive gap at or above the existing `0.5 s` stale limit,
+disconnect, stale source timestamp, or a stale-update event; position/yaw drift
+is reported but has no invented acceptance threshold. Use the package-local
+`src/odometry_validation/README.md` only for the optional pre-motion
+odometry-validation stream check:
+
+```bash
+ros2 run odometry_validation teledex_stream_diagnostic \
+  --duration-s 60 \
+  --poll-rate-hz 20 \
+  --teledex-reference-root /opt/teledex_reference \
+  --teledex-phone-to-base-rpy-deg -90 0 0 \
+  --teledex-phone-to-base-translation-m 0.1425 -0.1000 -0.0075 \
+  --teledex-stale-timeout-s 0.5 \
+  --output /tmp/teledex-odometry-preflight-$(date -u +%Y%m%dT%H%M%SZ).json
+```
+
 Rebuild the active workspace inside the running container:
 
 ```bash

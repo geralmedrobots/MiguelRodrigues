@@ -26,6 +26,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
+# Match the already validated host TeleDex environment.  The reference source
+# is supplied separately as a read-only bind mount at container creation time.
+COPY ./deployment/requirements/teledex.txt /tmp/teledex-requirements.txt
+RUN python3 -m pip install --no-cache-dir \
+      -r /tmp/teledex-requirements.txt \
+    && rm /tmp/teledex-requirements.txt \
+    && install -d -m 0555 /opt/teledex_reference
+
 # Add the ROS 2 Humble repository.
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
       -o /usr/share/keyrings/ros-archive-keyring.gpg \
@@ -38,6 +46,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-colcon-common-extensions \
     ros-humble-desktop \
+    ros-humble-slam-toolbox \
     ros-humble-joy-linux \
     ros-humble-rmw-fastrtps-cpp \
     && rm -rf /var/lib/apt/lists/*
@@ -56,7 +65,9 @@ RUN . /opt/ros/humble/setup.sh \
          joy_to_cmdvel \
          command_arbiter \
          roboteq_ros2_driver \
-         teleop_pharma
+         teleop_pharma \
+         pharmarobot_slam \
+         odometry_validation
 
 RUN printf '%s\n' \
     'source /opt/ros/humble/setup.bash' \

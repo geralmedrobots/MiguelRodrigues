@@ -3,6 +3,8 @@ install/
 log/
 odom_test_logs/
 robot_logs/
+**/validation_evidence/
+**/validation_evidenceclear/
 .git/
 **/.git/
 **/__pycache__/
