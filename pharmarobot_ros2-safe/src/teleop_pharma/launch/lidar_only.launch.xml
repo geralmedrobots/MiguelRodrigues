@@ -8,6 +8,12 @@
   <arg name="back_port" default="/dev/lidar_back"/>
   <arg name="baudrate" default="460800"/>
 
+  <!-- Ground-plane projection of the differential-drive rotation centre. -->
+  <node pkg="tf2_ros"
+        exec="static_transform_publisher"
+        name="footprint_to_base_link"
+        args="0 0 0.042 0 0 0 base_footprint base_link"/>
+
   <!-- Front LiDAR TF -->
   <node pkg="tf2_ros"
         exec="static_transform_publisher"
