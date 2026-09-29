@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="${PHARMA_WS_DIR:-/home/medrobots/pharmarobot/pharmarobot/pharmarobot_ros2-master}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deployment/scripts/pharma_workspace_mount.sh
+source "$SCRIPT_DIR/pharma_workspace_mount.sh"
+
+ROOT_DIR=""
+resolve_pharma_workspace_root ROOT_DIR
 TOOL="$ROOT_DIR/src/realsense_imu/tools/d455_production_container.py"
 
 if [[ ! -f "$TOOL" ]]; then

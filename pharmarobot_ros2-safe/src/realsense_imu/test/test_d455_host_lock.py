@@ -5,6 +5,7 @@
 """Offline tests for production/validation D455 host mutual exclusion."""
 
 import importlib.util
+import multiprocessing
 from pathlib import Path
 import sys
 
@@ -19,6 +20,49 @@ assert SPEC is not None and SPEC.loader is not None
 host_lock = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = host_lock
 SPEC.loader.exec_module(host_lock)
+
+
+def _hold_lock(path_string, ready, release):
+    """Hold a real OS flock until the parent tells this process to release."""
+    try:
+        with host_lock.d455_host_lock(
+            "production_start", path=Path(path_string)
+        ):
+            ready.set()
+            release.wait(5)
+    except BaseException as error:  # pragma: no cover - reported to parent
+        ready.set()
+        raise error
+
+
+def test_host_lock_is_process_scoped_and_releases_after_owner_exit(tmp_path):
+    """A live owner blocks another process, then the OS releases its flock."""
+    context = multiprocessing.get_context("fork")
+    lock_path = tmp_path / "d455.lock"
+    ready = context.Event()
+    release = context.Event()
+    owner = context.Process(
+        target=_hold_lock,
+        args=(str(lock_path), ready, release),
+    )
+    owner.start()
+    assert ready.wait(5)
+    try:
+        with pytest.raises(
+            host_lock.D455HostLockError, match="lock is held"
+        ):
+            with host_lock.d455_host_lock(
+                "validation_workflow", path=lock_path
+            ):
+                raise AssertionError("concurrent workflow entered lock")
+    finally:
+        release.set()
+        owner.join(5)
+    assert owner.exitcode == 0
+    with host_lock.d455_host_lock(
+        "validation_workflow", path=lock_path
+    ):
+        pass
 
 
 def test_production_and_validation_contend_on_one_host_lock(tmp_path):

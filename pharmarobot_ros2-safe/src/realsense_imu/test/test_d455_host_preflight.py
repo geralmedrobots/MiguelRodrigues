@@ -306,6 +306,9 @@ def test_missing_non_enforcing_or_stale_profile_requires_approval(
             manifest=value,
             authorize_reload=False,
         )
+    assert len(runner.commands) == 1
+    assert runner.commands[0][0][0] == "apparmor_parser"
+    assert "-r" not in runner.commands[0][0]
 
 
 def test_conflicting_loaded_profile_fails_without_reload(tmp_path):

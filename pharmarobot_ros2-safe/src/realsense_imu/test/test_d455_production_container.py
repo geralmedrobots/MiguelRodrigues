@@ -1068,13 +1068,15 @@ def test_new_container_cleanup_fails_when_remove_or_absence_is_unproven(
 
 
 def test_running_exact_container_start_is_idempotent(monkeypatch, tmp_path):
-    state = {"locked": False, "released": False}
+    state = {"locked": False, "released": False, "events": []}
 
     class TrackingLock:
         def __enter__(self):
+            state["events"].append("enter")
             state["locked"] = True
 
         def __exit__(self, *_args):
+            state["events"].append("exit")
             state["locked"] = False
             state["released"] = True
 
@@ -1103,6 +1105,7 @@ def test_running_exact_container_start_is_idempotent(monkeypatch, tmp_path):
         == 0
     )
     assert state["released"] is True
+    assert state["events"] == ["enter", "exit"]
     assert runner.calls == []
 
 
@@ -1289,8 +1292,8 @@ def test_stopped_configuration_drift_requires_explicit_recreation(
         lifecycle, "image_id", lambda: "sha256:" + "1" * 64
     )
     with pytest.raises(
-        production.ProductionContainerError,
-        match="explicit recreation authorization",
+        production.ApprovalRequired,
+        match="--authorize-recreate is required",
     ):
         lifecycle.ensure_created(
             authorize_profile_reload=False,
@@ -1399,6 +1402,74 @@ def test_status_succeeds_only_when_container_is_ready(
     )
     assert production.main(["status"]) == expected_status
     assert f"D455_SENSOR_READY={ready}" in capsys.readouterr().out
+
+
+def test_approval_required_exit_is_non_restartable_and_actionable(
+    monkeypatch, capsys
+):
+    class ApprovalLifecycle:
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def start(**options):
+            assert options == {
+                "authorize_profile_reload": False,
+                "authorize_recreate": False,
+                "attach": True,
+            }
+            raise production.ApprovalRequired(
+                "apparmor_reload",
+                "candidate differs from loaded enforcing state; "
+                "--authorize-profile-reload is required",
+            )
+
+    monkeypatch.setattr(
+        production, "ProductionLifecycle", ApprovalLifecycle
+    )
+    status = production.main(["run"])
+    error = capsys.readouterr().err
+
+    assert status == production.OPERATOR_APPROVAL_REQUIRED_EXIT_STATUS
+    assert status == 78
+    assert "approval required" in error
+    assert "--authorize-profile-reload is required" in error
+    assert "systemd will not restart this status" in error
+    assert "Do not persist authorization flags" in error
+
+    service = read("deployment/systemd/pharma-d455-imu.service")
+    assert "Restart=on-failure" in service
+    assert f"RestartPreventExitStatus={status}" in service
+    exec_start = next(
+        line for line in service.splitlines() if line.startswith("ExecStart=")
+    )
+    assert "--authorize-profile-reload" not in exec_start
+    assert "--authorize-recreate" not in exec_start
+    wrapper = read("deployment/scripts/pharma_d455_sensor_container.sh")
+    assert "--authorize-profile-reload" not in wrapper
+    assert "--authorize-recreate" not in wrapper
+
+
+def test_unexpected_start_failure_remains_restartable(monkeypatch, capsys):
+    class FailedLifecycle:
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def start(**_options):
+            raise production.ProductionContainerError(
+                "injected unexpected failure"
+            )
+
+    monkeypatch.setattr(production, "ProductionLifecycle", FailedLifecycle)
+    status = production.main(["run"])
+
+    assert status == 1
+    assert status != production.OPERATOR_APPROVAL_REQUIRED_EXIT_STATUS
+    assert "injected unexpected failure" in capsys.readouterr().err
+    service = read("deployment/systemd/pharma-d455-imu.service")
+    assert "Restart=on-failure" in service
+    assert "RestartPreventExitStatus=78" in service
 
 
 def read(relative):

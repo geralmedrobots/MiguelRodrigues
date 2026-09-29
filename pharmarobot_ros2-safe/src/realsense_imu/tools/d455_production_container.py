@@ -34,6 +34,7 @@ try:
     from d455_host_preflight import build_manifest
     from d455_host_preflight import assert_resources_unchanged
     from d455_host_preflight import _access_probe_script
+    from d455_host_preflight import ApprovalRequired
     from d455_host_preflight import atomic_write_json
     from d455_host_preflight import Evidence
     from d455_host_preflight import INSTALLED_MANIFEST_PATH
@@ -51,6 +52,7 @@ except ImportError:
     from d455_host_preflight import build_manifest
     from d455_host_preflight import assert_resources_unchanged
     from d455_host_preflight import _access_probe_script
+    from d455_host_preflight import ApprovalRequired
     from d455_host_preflight import atomic_write_json
     from d455_host_preflight import Evidence
     from d455_host_preflight import INSTALLED_MANIFEST_PATH
@@ -91,6 +93,7 @@ ACCESS_PROBE_NAME = "pharmarobot_d455_sensor_access_probe"
 ACCESS_PROBE_LABEL_KEY = "pharmarobot.d455.production-probe"
 COMMAND_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 20
+OPERATOR_APPROVAL_REQUIRED_EXIT_STATUS = 78
 CONTAINER_NAME_PATTERN = re.compile(r"pharmarobot_d455_sensor")
 IMAGE_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -1263,9 +1266,10 @@ class ProductionLifecycle:
                     "stop it before separately authorized recreation"
                 )
             if not authorize_recreate:
-                raise ProductionContainerError(
+                raise ApprovalRequired(
+                    "container_recreate",
                     "stopped production container configuration drift; "
-                    "explicit recreation authorization is required"
+                    "--authorize-recreate is required",
                 )
             existing = self.require_recorded_owned()
             _checked(
@@ -1641,6 +1645,26 @@ def main(args: Optional[Sequence[str]] = None) -> int:
             print(result.stdout, end="")
             print(result.stderr, end="", file=sys.stderr)
             return 0
+    except ApprovalRequired as exc:
+        print(
+            "D455 production container approval required: "
+            f"{exc}",
+            file=sys.stderr,
+        )
+        print(
+            "D455 unattended startup stopped with exit status "
+            f"{OPERATOR_APPROVAL_REQUIRED_EXIT_STATUS}; systemd will not "
+            "restart this status.",
+            file=sys.stderr,
+        )
+        print(
+            "D455 operator action: stop pharma-d455-imu.service, run one "
+            "explicitly authorized pharma_d455_sensor_container.sh command "
+            "with the required flag named above, then start the service. "
+            "Do not persist authorization flags in the service.",
+            file=sys.stderr,
+        )
+        return OPERATOR_APPROVAL_REQUIRED_EXIT_STATUS
     except ProductionContainerError as exc:
         print(f"D455 production container failed: {exc}", file=sys.stderr)
         return 1

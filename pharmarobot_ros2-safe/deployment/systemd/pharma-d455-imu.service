@@ -10,6 +10,7 @@ EnvironmentFile=-/etc/default/pharmarobot
 ExecStart=/usr/local/bin/pharma_d455_sensor_container.sh run
 ExecStop=/usr/local/bin/pharma_d455_sensor_container.sh stop
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=5
 TimeoutStartSec=60
 TimeoutStopSec=30

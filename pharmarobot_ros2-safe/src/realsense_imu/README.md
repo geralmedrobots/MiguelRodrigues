@@ -175,6 +175,28 @@ the exact immutable-recorded owned production sensor container; the subsequent
 prepare phase then performs the foreign-owner census before that owned
 container is started again.
 
+An unattended `pharma-d455-imu.service` startup that reaches an explicit
+approval gate exits with status `78`. The unit uses
+`RestartPreventExitStatus=78`, so this fail-closed state remains stopped instead
+of entering an automatic restart loop. Other nonzero failures retain
+`Restart=on-failure`. The journal names the required one-shot authorization;
+no authorization option is present in the unit or persistent environment.
+
+After reviewing and approving the requested host transition, recover with one
+manual authorized start and then return supervision to systemd:
+
+```bash
+sudo systemctl stop pharma-d455-imu.service
+sudo /usr/local/bin/pharma_d455_sensor_container.sh start \
+  --authorize-profile-reload
+sudo systemctl start pharma-d455-imu.service
+```
+
+Add `--authorize-recreate` only when the same preflight reports stopped
+container configuration drift and that separate operation has also been
+approved. Do not add either authorization to the service unit or
+`/etc/default/pharmarobot`.
+
 The production sensor container must be stopped before a command may include
 `--authorize-profile-reload`. Supplying reload authorization while it is
 running fails before image verification, preflight, or `apparmor_parser`, so a
